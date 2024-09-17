@@ -1,0 +1,133 @@
+-- Obfuscated Script
+local a1 = "rbxassetid://16719053698"
+local a2 = 999999
+local a3 = 0
+
+local b1 = game:GetService(string.char(80,108,97,121,101,114,115))
+local b2 = game:GetService(string.char(82,117,110,83,101,114,118,105,99,101))
+local b3 = game:GetService(string.char(85,115,101,114,73,110,112,117,116,83,101,114,118,105,99,101))
+local b4 = game:GetService(string.char(71,117,105,83,101,114,118,105,99,101))
+
+local c1 = b1.LocalPlayer
+local c2 = c1.Character or c1.CharacterAdded:Wait()
+local c3 = c2:WaitForChild(string.char(72,117,109,97,110,111,105,100))
+
+local d1 = false
+local d2 = nil
+
+local function e1()
+    local e2 = Instance.new(string.char(65,110,105,109,97,116,105,111,110))
+    e2.AnimationId = a1
+    local e3 = c3:LoadAnimation(e2)
+    e3.Looped = true
+    return e3
+end
+
+local function f1()
+    if not d2 then
+        d2 = e1()
+    end
+    
+    if not d2.IsPlaying then
+        d2:Play(0, 1, a2)
+    end
+end
+
+local function f2()
+    if d2 and d2.IsPlaying then
+        d2:Stop()
+    end
+end
+
+local function g1(g2, g3)
+    if g3 then return end
+    if g2.KeyCode == Enum.KeyCode.T then
+        if d1 then
+            f2()
+        else
+            d1 = true
+            while d1 do
+                f1()
+                b2.RenderStepped:Wait()
+                wait(a3 / 1000)
+            end
+        end
+        d1 = not d1
+    end
+end
+
+local function h1()
+    local h2 = Instance.new(string.char(83,99,114,101,101,110,71,117,105), c1.PlayerGui)
+    local h3 = Instance.new(string.char(84,101,120,116,76,97,98,101,108), h2)
+    h3.Size = UDim2.new(0, 200, 0, 50)
+    h3.Position = UDim2.new(0.5, -100, 0, 10)
+    h3.Text = "Made by GiedriusNeGrybas (mandras_gandras), press P to hide"
+    h3.TextScaled = true
+    h3.BackgroundTransparency = 1
+    h3.TextColor3 = Color3.new(1, 1, 1)
+end
+
+h1()
+b3.InputBegan:Connect(g1)
+
+c2.AncestryChanged:Connect(function(_, parent)
+    if parent == workspace then
+        c3 = c2:WaitForChild(string.char(72,117,109,97,110,111,105,100))
+        if d1 then
+            f1()
+        end
+    end
+end)
+
+local i1 = game.Players.LocalPlayer
+local i2 = game:GetService(string.char(85,115,101,114,73,110,112,117,116,83,101,114,118,105,99,101))
+
+local j1 = 20000
+local j2 = Vector3.new(500, 10, 500)
+local j3 = Vector3.new(0, j1, 0)
+
+local k1 = false
+local k2 = nil
+
+local function l1()
+    local l2 = Instance.new(string.char(80,97,114,116))
+    l2.Size = j2
+    l2.Position = j3
+    l2.Anchored = true
+    l2.Name = "TeleportPlatform"
+    l2.Material = Enum.Material.Grass
+    l2.Parent = workspace
+end
+
+local function m1()
+    if not k1 then
+        k2 = i1.Character.HumanoidRootPart.Position
+        i1.Character:SetPrimaryPartCFrame(CFrame.new(j3 + Vector3.new(0, 5, 0)))
+        k1 = true
+    else
+        i1.Character:SetPrimaryPartCFrame(CFrame.new(k2))
+        k1 = false
+    end
+end
+
+i2.InputBegan:Connect(function(input, gameProcessedEvent)
+    if input.KeyCode == Enum.KeyCode.P and not gameProcessedEvent then
+        m1()
+    end
+end)
+
+l1()
+
+local function n1()
+    for _, n2 in pairs(workspace:GetDescendants()) do
+        if n2.Name == "Portal" then
+            n2:Destroy()
+            print("Portal object deleted.")
+        end
+    end
+end
+
+while true do
+    n1()
+    wait(1)
+end
