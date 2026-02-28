@@ -1,0 +1,1267 @@
+--[[
+  NOVA AI v2 — PART 2 of 2
+  Inject AFTER Part 1. Requires _G.NOVA to exist.
+--]]
+
+local N   = _G.NOVA
+if not N then print("[Nova] ERROR: Run Part 1 first!") return end
+
+local T   = N.T
+local tw  = N.tw
+local new = N.new
+local rnd = N.rnd
+local str = N.str
+local pad = N.pad
+local lst = N.lst
+local hov = N.hov
+
+local Players          = N.Players
+local RunService       = N.RunService
+local TweenService     = N.TweenService
+local UserInputService = N.UserInputService
+local HttpService      = N.HttpService
+local Player           = N.Player
+local PlayerGui        = N.PlayerGui
+local Screen           = N.Screen
+
+-- ══ SANDBOX EXECUTOR ═════════════════════════════
+local function safeExec(code)
+    local env = {
+        print=print,warn=warn,wait=task.wait,task=task,math=math,table=table,
+        string=string,os=os,ipairs=ipairs,pairs=pairs,next=next,select=select,
+        tonumber=tonumber,tostring=tostring,type=type,pcall=pcall,xpcall=xpcall,
+        error=error,rawget=rawget,rawset=rawset,rawequal=rawequal,
+        unpack=unpack or table.unpack,coroutine=coroutine,
+        Vector3=Vector3,Vector2=Vector2,CFrame=CFrame,Color3=Color3,
+        UDim2=UDim2,UDim=UDim,BrickColor=BrickColor,TweenInfo=TweenInfo,
+        Enum=Enum,Instance=Instance,game=game,workspace=workspace,script=script,
+        Player=Player,
+        Character=function() return Player.Character end,
+        Humanoid=function() return Player.Character and Player.Character:FindFirstChildOfClass("Humanoid") end,
+        RootPart=function() return Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") end,
+    }
+    env._ENV=env
+    local fn,err=loadstring(code)
+    if not fn then return false,"Syntax: "..tostring(err) end
+    setfenv(fn,env)
+    local ok,runErr=pcall(fn)
+    if not ok then return false,"Runtime: "..tostring(runErr) end
+    return true,"Ran successfully ✓"
+end
+
+-- ══ GROQ API ══════════════════════════════════════
+local function callGroq(prompt,history)
+    local messages={{role="system",content=N.SYSTEM_PROMPT}}
+    local startIdx=math.max(1,#history-8)
+    for i=startIdx,#history do
+        local h=history[i]
+        if h.role=="user" or h.role=="ai" then
+            table.insert(messages,{role=h.role=="ai" and "assistant" or "user",content=tostring(h.text or "")})
+        end
+    end
+    table.insert(messages,{role="user",content=prompt})
+    local body=HttpService:JSONEncode({model=N.MODEL,max_tokens=N.MAX_TOKENS,temperature=0.4,messages=messages})
+    local httpReq=(typeof(http_request)=="function" and http_request) or (syn and syn.request) or (http and http.request) or (typeof(request)=="function" and request) or function(o) return HttpService:RequestAsync(o) end
+    local resp=httpReq({Url="https://api.groq.com/openai/v1/chat/completions",Method="POST",Headers={["Content-Type"]="application/json",["Authorization"]="Bearer "..N.API_KEY},Body=body})
+    local sc=tonumber(resp.StatusCode) or 200
+    if sc<200 or sc>=300 then error("HTTP "..tostring(resp.StatusCode).." — "..tostring(resp.StatusMessage or "")) end
+    local outer=HttpService:JSONDecode(resp.Body)
+    if not outer or not outer.choices or not outer.choices[1] then error("Empty response") end
+    local text=outer.choices[1].message.content or ""
+    text=text:gsub("```json",""):gsub("```lua",""):gsub("```",""):match("^%s*(.-)%s*$")
+    local ok,parsed=pcall(HttpService.JSONDecode,HttpService,text)
+    if ok and type(parsed)=="table" then return {message=tostring(parsed.message or "Here you go!"),code=tostring(parsed.code or "")} end
+    return {message=text,code=""}
+end
+
+-- ══ TERMINAL (hack panel output) ══════════════════
+local TermFrame=new("Frame",N.HackScroll,{Size=UDim2.new(1,0,0,130),BackgroundColor3=Color3.fromRGB(0,6,1),BorderSizePixel=0,ZIndex=9,LayoutOrder=1})
+rnd(TermFrame,6); str(TermFrame,T.H_DIM,1); pad(TermFrame,6,6,6,6)
+local TermScroll=new("ScrollingFrame",TermFrame,{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=2,ScrollBarImageColor3=T.H_DIM,CanvasSize=UDim2.new(0,0,0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y,ZIndex=10})
+lst(TermScroll)
+local function termPrint(text,color)
+    local l=new("TextLabel",TermScroll,{Text=text,TextColor3=color or T.H_FG,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true,ZIndex=11})
+    task.wait(); TermScroll.CanvasPosition=Vector2.new(0,math.huge)
+end
+local function termClear()
+    for _,c in ipairs(TermScroll:GetChildren()) do if not c:IsA("UIListLayout") then c:Destroy() end end
+    termPrint("> NEXUS TERMINAL READY",T.H_DIM)
+end
+termClear()
+
+-- ══ HACK PANEL HELPERS ════════════════════════════
+local sectionOrder=2
+local function section(text)
+    sectionOrder=sectionOrder+1
+    new("TextLabel",N.HackScroll,{Text=text,TextColor3=T.H_DIM,Font=Enum.Font.GothamBold,TextSize=9,BackgroundTransparency=1,Size=UDim2.new(1,0,0,18),ZIndex=9,TextXAlignment=Enum.TextXAlignment.Left,LayoutOrder=sectionOrder})
+    sectionOrder=sectionOrder+1
+end
+
+local function hBtn(label,col,desc)
+    sectionOrder=sectionOrder+1
+    local ord=sectionOrder
+    local outer=new("Frame",N.HackScroll,{Size=UDim2.new(1,0,0,0),BackgroundTransparency=1,AutomaticSize=Enum.AutomaticSize.Y,ZIndex=8,LayoutOrder=ord})
+    lst(outer,Enum.FillDirection.Vertical,Enum.HorizontalAlignment.Left,2)
+    local f=new("Frame",outer,{Size=UDim2.new(1,0,0,36),BackgroundColor3=T.H_DARK,BorderSizePixel=0,ZIndex=9})
+    rnd(f,6); str(f,col or T.H_FG,1); pad(f,0,10,0,10)
+    local b=new("TextButton",f,{Text=label,TextColor3=col or T.H_FG,Font=Enum.Font.GothamBold,TextSize=11,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=10})
+    b.MouseEnter:Connect(function() tw(f,{BackgroundColor3=T.H_MED},.1) end)
+    b.MouseLeave:Connect(function() tw(f,{BackgroundColor3=T.H_DARK},.1) end)
+    if desc then new("TextLabel",outer,{Text=desc,TextColor3=T.H_DIM,Font=Enum.Font.Gotham,TextSize=9,BackgroundTransparency=1,Size=UDim2.new(1,0,0,12),ZIndex=9,TextXAlignment=Enum.TextXAlignment.Left}) end
+    sectionOrder=sectionOrder+1
+    return b,f,outer
+end
+
+-- ══ SECURITY ══════════════════════════════════════
+section("── SECURITY ───────────────────────────────────")
+local ScanBtn=hBtn("🔍  Scan For Backdoors",T.H_FG,"Checks all scripts and remotes for suspicious patterns")
+ScanBtn.MouseButton1Click:Connect(function()
+    termClear(); termPrint("> SCANNING..."); task.wait(.2)
+    local suspicious,total={},0
+    local kws={"loadstring","HttpGet","HttpService","discord","webhook","getfenv","syn%.request","http_request","exec","backdoor","bypass","admin_key"}
+    pcall(function()
+        for _,obj in ipairs(game:GetDescendants()) do
+            total=total+1
+            local cn=obj.ClassName
+            if cn=="Script" or cn=="LocalScript" or cn=="ModuleScript" then
+                local src="" pcall(function() src=obj.Source or "" end)
+                for _,kw in ipairs(kws) do if src:lower():find(kw:lower()) then table.insert(suspicious,{name=obj.Name,path=obj:GetFullName(),kw=kw}) break end end
+            end
+            if cn=="RemoteEvent" or cn=="RemoteFunction" then
+                for _,kw in ipairs({"exec","eval","run","cmd","back","key"}) do
+                    if obj.Name:lower():find(kw) then table.insert(suspicious,{name=obj.Name,path=obj:GetFullName(),kw="suspicious name"}) break end
+                end
+            end
+        end
+    end)
+    termPrint("> Scanned "..total.." instances")
+    if #suspicious==0 then termPrint("> ✓ CLEAN",T.SUCCESS)
+    else
+        termPrint("> ⚠ "..#suspicious.." SUSPICIOUS:",T.H_WARN)
+        for _,s in ipairs(suspicious) do termPrint("  [!] "..s.name.." | "..s.kw,T.H_WARN); termPrint("      "..s.path,T.H_DIM) end
+    end
+end)
+
+-- ══ REMOTES ═══════════════════════════════════════
+section("── REMOTES ────────────────────────────────────")
+local FindCRBtn=hBtn("📡  Find C→R Remotes",T.H_FG,"Finds server-side remotes")
+
+sectionOrder=sectionOrder+1
+local SpamPanel=new("Frame",N.HackScroll,{Size=UDim2.new(1,0,0,230),BackgroundColor3=Color3.fromRGB(0,10,3),BorderSizePixel=0,ZIndex=8,LayoutOrder=sectionOrder,Visible=false,ClipsDescendants=true})
+rnd(SpamPanel,6); str(SpamPanel,T.H_DIM,1); pad(SpamPanel,8,8,8,8)
+sectionOrder=sectionOrder+1
+
+new("TextLabel",SpamPanel,{Text="Select remote:",TextColor3=T.H_DIM,Font=Enum.Font.Code,TextSize=9,BackgroundTransparency=1,Size=UDim2.new(1,0,0,14),ZIndex=9})
+local RemoteList=new("ScrollingFrame",SpamPanel,{Size=UDim2.new(1,0,0,80),Position=UDim2.new(0,0,0,18),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=2,ScrollBarImageColor3=T.H_DIM,CanvasSize=UDim2.new(0,0,0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y,ZIndex=10})
+lst(RemoteList)
+local CDLabel=new("TextLabel",SpamPanel,{Text="Cooldown: 0.10s",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,0,0,16),Position=UDim2.new(0,0,0,104),ZIndex=9})
+local CDRow=new("Frame",SpamPanel,{Size=UDim2.new(1,0,0,24),Position=UDim2.new(0,0,0,124),BackgroundTransparency=1,ZIndex=9})
+lst(CDRow,Enum.FillDirection.Horizontal,Enum.HorizontalAlignment.Left,4)
+local function cdBtnF(label,delta)
+    local f=new("Frame",CDRow,{Size=UDim2.new(0,44,1,0),BackgroundColor3=T.H_MED,BorderSizePixel=0,ZIndex=10}) rnd(f,4); str(f,T.H_DIM,1)
+    local b=new("TextButton",f,{Text=label,TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=11})
+    b.MouseButton1Click:Connect(function() N.spamCooldown=math.clamp(N.spamCooldown+delta,.01,5) CDLabel.Text=("Cooldown: %.2fs"):format(N.spamCooldown) end)
+end
+cdBtnF("−−",-.1); cdBtnF("−",-.01); cdBtnF("+", .01); cdBtnF("++", .1)
+local SpamBF=new("Frame",SpamPanel,{Size=UDim2.new(1,0,0,28),Position=UDim2.new(0,0,0,156),BackgroundColor3=T.H_MED,BorderSizePixel=0,ZIndex=9}) rnd(SpamBF,6); str(SpamBF,T.H_FG,1)
+local SpamBtn=new("TextButton",SpamBF,{Text="▶ START SPAM",TextColor3=T.H_FG,Font=Enum.Font.GothamBold,TextSize=11,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=10})
+local NukeBF=new("Frame",SpamPanel,{Size=UDim2.new(1,0,0,28),Position=UDim2.new(0,0,0,192),BackgroundColor3=Color3.fromRGB(40,0,0),BorderSizePixel=0,ZIndex=9}) rnd(NukeBF,6); str(NukeBF,T.H_RED,1)
+local NukeBtn=new("TextButton",NukeBF,{Text="☢ NUKE (10 threads, 0 delay)",TextColor3=T.H_RED,Font=Enum.Font.GothamBold,TextSize=11,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=10})
+
+local nukeActive=false
+SpamBtn.MouseButton1Click:Connect(function()
+    if not N.spamActive then
+        if not N.spamTarget then termPrint("> Select a remote first!",T.H_WARN) return end
+        N.spamActive=true; SpamBtn.Text="■ STOP SPAM"
+        tw(SpamBF,{BackgroundColor3=Color3.fromRGB(60,5,5)},.1)
+        termPrint("> SPAMMING: "..N.spamTarget.Name,T.H_WARN)
+        task.spawn(function() while N.spamActive do pcall(function() if N.spamTarget:IsA("RemoteEvent") then N.spamTarget:FireServer() else N.spamTarget:InvokeServer() end end) task.wait(N.spamCooldown) end end)
+    else N.spamActive=false; SpamBtn.Text="▶ START SPAM"; tw(SpamBF,{BackgroundColor3=T.H_MED},.1); termPrint("> SPAM STOPPED") end
+end)
+NukeBtn.MouseButton1Click:Connect(function()
+    if not nukeActive then
+        if not N.spamTarget then termPrint("> Select a remote first!",T.H_WARN) return end
+        nukeActive=true; NukeBtn.Text="■ STOP NUKE"; tw(NukeBF,{BackgroundColor3=Color3.fromRGB(90,0,0)},.1)
+        termPrint("> ☢ NUKING: "..N.spamTarget.Name,T.H_RED)
+        for _=1,10 do task.spawn(function() while nukeActive do pcall(function() if N.spamTarget:IsA("RemoteEvent") then N.spamTarget:FireServer() else N.spamTarget:InvokeServer() end end) task.wait(0) end end) end
+    else nukeActive=false; NukeBtn.Text="☢ NUKE (10 threads, 0 delay)"; tw(NukeBF,{BackgroundColor3=Color3.fromRGB(40,0,0)},.1); termPrint("> NUKE STOPPED") end
+end)
+
+FindCRBtn.MouseButton1Click:Connect(function()
+    termClear(); termPrint("> SCANNING FOR SERVER-SIDE REMOTES..."); task.wait(.2)
+    for _,c in ipairs(RemoteList:GetChildren()) do if not c:IsA("UIListLayout") then c:Destroy() end end
+    N.spamTarget=nil
+    local clientPaths={"StarterGui","StarterPack","StarterPlayer","PlayerGui","Backpack"}
+    local found={}
+    pcall(function() for _,v in ipairs(game:GetDescendants()) do if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then local path=v:GetFullName(); local isC=false; for _,cp in ipairs(clientPaths) do if path:find(cp) then isC=true;break end end; if not isC then table.insert(found,v) end end end end)
+    termPrint("> Found "..#found.." server-side remote(s)")
+    for _,remote in ipairs(found) do
+        local cap=remote
+        local rowF=new("Frame",RemoteList,{Size=UDim2.new(1,0,0,22),BackgroundColor3=Color3.fromRGB(0,12,3),BorderSizePixel=0,ZIndex=11}) rnd(rowF,4)
+        local rowBtn=new("TextButton",rowF,{Text="  "..remote.Name.." ["..remote.ClassName.."]",TextColor3=T.H_DIM,Font=Enum.Font.Code,TextSize=9,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=12,TextXAlignment=Enum.TextXAlignment.Left})
+        rowBtn.MouseButton1Click:Connect(function()
+            N.spamTarget=cap
+            for _,c in ipairs(RemoteList:GetChildren()) do if c:IsA("Frame") then tw(c,{BackgroundColor3=Color3.fromRGB(0,12,3)},.1) local b=c:FindFirstChildOfClass("TextButton") if b then tw(b,{TextColor3=T.H_DIM},.1) end end end
+            tw(rowF,{BackgroundColor3=Color3.fromRGB(0,40,12)},.1); tw(rowBtn,{TextColor3=T.H_FG},.1)
+            termPrint("> Selected: "..cap.Name)
+        end)
+    end
+    SpamPanel.Visible=#found>0
+    if #found==0 then termPrint("> No server-side remotes found",T.H_DIM) end
+end)
+
+-- ══ EXPLOIT DETECTION ═════════════════════════════
+section("── EXPLOIT DETECTION ──────────────────────────")
+local ExploitBtn=hBtn("☠  Check Exploit Methods",T.H_WARN,"Finds fling/kill/ban/currency remotes")
+ExploitBtn.MouseButton1Click:Connect(function()
+    termClear(); termPrint("> SCANNING..."); task.wait(.2)
+    local cats={
+        {n="⚡ FLING",kws={"fling","launch","throw","ragdoll","knockback","force","yeet"}},
+        {n="💀 KILL",kws={"kill","die","damage","hurt","eliminate","slay"}},
+        {n="🔨 BAN",kws={"ban","kick","punish","suspend","blacklist","boot"}},
+        {n="💰 CURRENCY",kws={"givecash","addcoin","addmoney","givegems","addbucks"}},
+        {n="👑 ADMIN",kws={"admin","owner","op","promote","grant","whitelist"}},
+        {n="🎮 GAMESTATE",kws={"start","win","reset","restart","round","intermission"}},
+    }
+    local results={}
+    pcall(function() for _,v in ipairs(game:GetDescendants()) do if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then local name=v.Name:lower() for _,cat in ipairs(cats) do for _,kw in ipairs(cat.kws) do if name:find(kw) then table.insert(results,{cat=cat.n,name=v.Name,path=v:GetFullName()}) break end end end end end end)
+    if #results==0 then termPrint("> ✓ None found",T.SUCCESS)
+    else termPrint("> Found "..#results.." method(s):",T.H_WARN) for _,r in ipairs(results) do termPrint("  "..r.cat.." → "..r.name,T.H_WARN); termPrint("    "..r.path,T.H_DIM) end end
+end)
+
+local BlockBtn=hBtn("🛡  Block Ban/Kick Remotes",T.SUCCESS,"Hooks them so they do nothing")
+BlockBtn.MouseButton1Click:Connect(function()
+    termClear(); termPrint("> BLOCKING..."); task.wait(.2)
+    local kws={"ban","kick","punish","suspend","blacklist","boot","mute"}; local count=0
+    pcall(function() for _,v in ipairs(game:GetDescendants()) do if v:IsA("RemoteEvent") and not N.blockedRemotes[v] then local name=v.Name:lower() for _,kw in ipairs(kws) do if name:find(kw) then N.blockedRemotes[v]=true; count=count+1; v.OnClientEvent:Connect(function() end); termPrint("> BLOCKED: "..v.Name,T.SUCCESS); break end end end end end)
+    if count==0 then termPrint("> None found",T.H_DIM) else termPrint("> Blocked "..count,T.SUCCESS) end
+end)
+
+-- ══ EXECUTE ═══════════════════════════════════════
+section("── EXECUTE ────────────────────────────────────")
+sectionOrder=sectionOrder+1
+local TRow=new("Frame",N.HackScroll,{Size=UDim2.new(1,0,0,30),BackgroundColor3=T.H_DARK,BorderSizePixel=0,ZIndex=9,LayoutOrder=sectionOrder})
+rnd(TRow,6); str(TRow,T.H_DIM,1); pad(TRow,0,8,0,8); lst(TRow,Enum.FillDirection.Horizontal,Enum.HorizontalAlignment.Left,4)
+sectionOrder=sectionOrder+1
+new("TextLabel",TRow,{Text="Target:",TextColor3=T.H_DIM,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(0,46,1,0),ZIndex=10})
+local TargetBox=new("TextBox",TRow,{Text="",PlaceholderText="name (blank=you)",PlaceholderColor3=T.H_DIM,TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,BorderSizePixel=0,Size=UDim2.new(1,-50,1,0),ZIndex=10,ClearTextOnFocus=false})
+
+local function getTarget()
+    local name=TargetBox.Text:match("^%s*(.-)%s*$")
+    if name=="" then return Player end
+    for _,p in ipairs(Players:GetPlayers()) do if p.Name:lower():find(name:lower()) then return p end end
+end
+local function getTChar(p) p=p or getTarget(); if not p then return nil,nil,nil end; local c=p.Character; if not c then return nil,nil,nil end; return c,c:FindFirstChildOfClass("Humanoid"),c:FindFirstChild("HumanoidRootPart") end
+
+local FlingBtn=hBtn("⚡  Fling Target",T.H_WARN,"Massive BodyVelocity in random direction")
+FlingBtn.MouseButton1Click:Connect(function()
+    local t=getTarget(); if not t then termPrint("> Not found",T.H_RED) return end
+    local _,hum,root=getTChar(t); if not root then termPrint("> No character",T.H_RED) return end
+    termPrint("> FLINGING: "..t.Name,T.H_WARN)
+    pcall(function()
+        for _,v in ipairs(root:GetChildren()) do if v:IsA("BodyVelocity") or v:IsA("BodyForce") then v:Destroy() end end
+        local bv=Instance.new("BodyVelocity"); bv.Velocity=Vector3.new(math.random(-1,1)*9999,9999,math.random(-1,1)*9999); bv.MaxForce=Vector3.new(math.huge,math.huge,math.huge); bv.P=math.huge; bv.Parent=root
+        if hum then hum:ChangeState(Enum.HumanoidStateType.Physics) end
+        task.delay(.2,function() pcall(function() bv:Destroy() end) end)
+    end)
+    termPrint("> Done!",T.SUCCESS)
+end)
+
+local KillBtn=hBtn("💀  Kill Target",T.H_RED,"Sets HP to 0")
+KillBtn.MouseButton1Click:Connect(function()
+    local t=getTarget(); if not t then termPrint("> Not found",T.H_RED) return end
+    local _,hum=getTChar(t); if not hum then termPrint("> No humanoid",T.H_RED) return end
+    pcall(function() hum.Health=0 end); termPrint("> Killed: "..t.Name,T.H_RED)
+end)
+
+local FreezeBtn=hBtn("🧊  Freeze/Unfreeze Target",Color3.fromRGB(100,200,255),"Anchors HumanoidRootPart")
+FreezeBtn.MouseButton1Click:Connect(function()
+    local t=getTarget(); if not t then termPrint("> Not found",T.H_RED) return end
+    local _,_,root=getTChar(t); if not root then termPrint("> No character",T.H_RED) return end
+    if N.frozenParts[t] then pcall(function() root.Anchored=false end); N.frozenParts[t]=nil; termPrint("> Unfroze: "..t.Name,T.SUCCESS)
+    else pcall(function() root.Anchored=true end); N.frozenParts[t]=true; termPrint("> Froze: "..t.Name,Color3.fromRGB(100,200,255)) end
+end)
+
+local TPToBtn=hBtn("📍  TP To Target",T.H_FG,"Teleports you to target")
+TPToBtn.MouseButton1Click:Connect(function()
+    local t=getTarget(); if not t then termPrint("> Not found",T.H_RED) return end
+    local _,_,tRoot=getTChar(t); if not tRoot then termPrint("> No character",T.H_RED) return end
+    local myRoot=Player.Character and Player.Character:FindFirstChild("HumanoidRootPart"); if not myRoot then return end
+    pcall(function() myRoot.CFrame=tRoot.CFrame*CFrame.new(3,0,0) end); termPrint("> TP to "..t.Name,T.SUCCESS)
+end)
+
+local TPHereBtn=hBtn("📍  TP Target To You",T.H_FG,"Pulls target to you")
+TPHereBtn.MouseButton1Click:Connect(function()
+    local t=getTarget(); if not t then termPrint("> Not found",T.H_RED) return end
+    local _,_,tRoot=getTChar(t); if not tRoot then termPrint("> No character",T.H_RED) return end
+    local myRoot=Player.Character and Player.Character:FindFirstChild("HumanoidRootPart"); if not myRoot then return end
+    pcall(function() tRoot.CFrame=myRoot.CFrame*CFrame.new(3,0,0) end); termPrint("> Pulled "..t.Name,T.SUCCESS)
+end)
+
+local InvisBtn=hBtn("👻  Toggle Invisible",T.H_FG,"LocalTransparencyModifier on your character")
+InvisBtn.MouseButton1Click:Connect(function()
+    local char=Player.Character; if not char then termPrint("> No character",T.H_RED) return end
+    N.isInvis=not N.isInvis
+    for _,p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") and p.Name~="HumanoidRootPart" then pcall(function() p.LocalTransparencyModifier=N.isInvis and 1 or 0 end) end
+    end
+    termPrint(N.isInvis and "> INVISIBLE (local)" or "> VISIBLE",T.SUCCESS)
+end)
+
+local NoclipBtn=hBtn("👁  Toggle Noclip",T.H_FG,"Disables collision on your character")
+NoclipBtn.MouseButton1Click:Connect(function()
+    N.noclipActive=not N.noclipActive
+    if N.noclipActive then
+        N.noclipConn=RunService.Stepped:Connect(function() local c=Player.Character; if c then for _,p in ipairs(c:GetDescendants()) do if p:IsA("BasePart") then pcall(function() p.CanCollide=false end) end end end end)
+        termPrint("> NOCLIP ON",T.SUCCESS)
+    else
+        if N.noclipConn then N.noclipConn:Disconnect(); N.noclipConn=nil end
+        local c=Player.Character; if c then for _,p in ipairs(c:GetDescendants()) do if p:IsA("BasePart") then pcall(function() p.CanCollide=true end) end end end
+        termPrint("> NOCLIP OFF",T.H_DIM)
+    end
+end)
+
+sectionOrder=sectionOrder+1
+local SpdRow=new("Frame",N.HackScroll,{Size=UDim2.new(1,0,0,28),BackgroundColor3=T.H_DARK,BorderSizePixel=0,ZIndex=9,LayoutOrder=sectionOrder})
+rnd(SpdRow,6); str(SpdRow,T.H_DIM,1); pad(SpdRow,0,8,0,8); lst(SpdRow,Enum.FillDirection.Horizontal,Enum.HorizontalAlignment.Left,4); sectionOrder=sectionOrder+1
+new("TextLabel",SpdRow,{Text="Speed:",TextColor3=T.H_DIM,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(0,46,1,0),ZIndex=10})
+local SpdBox=new("TextBox",SpdRow,{Text="50",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=11,BackgroundTransparency=1,BorderSizePixel=0,Size=UDim2.new(0,44,1,0),ZIndex=10,ClearTextOnFocus=false})
+local SF=new("Frame",SpdRow,{Size=UDim2.new(0,54,0,22),BackgroundColor3=T.H_MED,BorderSizePixel=0,ZIndex=10}) rnd(SF,4); str(SF,T.H_FG,1)
+local SB=new("TextButton",SF,{Text="SET",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=11})
+local RF=new("Frame",SpdRow,{Size=UDim2.new(0,54,0,22),BackgroundColor3=T.H_DARK,BorderSizePixel=0,ZIndex=10}) rnd(RF,4); str(RF,T.H_DIM,1)
+local RB=new("TextButton",RF,{Text="RESET",TextColor3=T.H_DIM,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=11})
+SB.MouseButton1Click:Connect(function() local hum=Player.Character and Player.Character:FindFirstChildOfClass("Humanoid"); if hum then pcall(function() hum.WalkSpeed=tonumber(SpdBox.Text) or 50 end); termPrint("> Speed: "..SpdBox.Text,T.SUCCESS) end end)
+RB.MouseButton1Click:Connect(function() local hum=Player.Character and Player.Character:FindFirstChildOfClass("Humanoid"); if hum then pcall(function() hum.WalkSpeed=16 end) end; termPrint("> Speed reset",T.H_DIM) end)
+
+sectionOrder=sectionOrder+1
+local JmpRow=new("Frame",N.HackScroll,{Size=UDim2.new(1,0,0,28),BackgroundColor3=T.H_DARK,BorderSizePixel=0,ZIndex=9,LayoutOrder=sectionOrder})
+rnd(JmpRow,6); str(JmpRow,T.H_DIM,1); pad(JmpRow,0,8,0,8); lst(JmpRow,Enum.FillDirection.Horizontal,Enum.HorizontalAlignment.Left,4); sectionOrder=sectionOrder+1
+new("TextLabel",JmpRow,{Text="Jump:",TextColor3=T.H_DIM,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(0,46,1,0),ZIndex=10})
+local JmpBox=new("TextBox",JmpRow,{Text="100",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=11,BackgroundTransparency=1,BorderSizePixel=0,Size=UDim2.new(0,44,1,0),ZIndex=10,ClearTextOnFocus=false})
+local JF=new("Frame",JmpRow,{Size=UDim2.new(0,54,0,22),BackgroundColor3=T.H_MED,BorderSizePixel=0,ZIndex=10}) rnd(JF,4); str(JF,T.H_FG,1)
+local JB=new("TextButton",JF,{Text="SET",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=11})
+JB.MouseButton1Click:Connect(function() local hum=Player.Character and Player.Character:FindFirstChildOfClass("Humanoid"); if hum then pcall(function() hum.JumpPower=tonumber(JmpBox.Text) or 100 end); termPrint("> Jump: "..JmpBox.Text,T.SUCCESS) end end)
+
+-- ══ TOOLS ═════════════════════════════════════════
+section("── TOOLS ──────────────────────────────────────")
+local DumpBtn=hBtn("📋  Dump All Remotes",T.H_FG,"Lists every remote in the game")
+DumpBtn.MouseButton1Click:Connect(function()
+    termClear(); termPrint("> DUMPING..."); task.wait(.1); local c=0
+    pcall(function() for _,v in ipairs(game:GetDescendants()) do if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then termPrint("  ["..v.ClassName.."] "..v:GetFullName()); c=c+1 end end end)
+    termPrint("> Total: "..c)
+end)
+local PlrBtn=hBtn("👥  Player Info Dump",T.H_FG,"All players, IDs, teams, HP")
+PlrBtn.MouseButton1Click:Connect(function()
+    termClear(); termPrint("> PLAYERS:")
+    for _,p in ipairs(Players:GetPlayers()) do
+        local team=p.Team and p.Team.Name or "none"; local hp="?"
+        if p.Character then local h=p.Character:FindFirstChildOfClass("Humanoid"); if h then hp=math.floor(h.Health).."/"..math.floor(h.MaxHealth) end end
+        termPrint("  "..p.Name.." | "..p.UserId.." | "..team.." | HP:"..hp)
+    end
+    termPrint("> Total: "..#Players:GetPlayers())
+end)
+
+-- ══ MASS REMOTE CHAOS ═════════════════════════════
+section("── MASS REMOTE CHAOS ──────────────────────────")
+
+local SKIP_KWS={"teleportservice","joinserver","joinplace","serverhop","teleporttoplace","joingame","switchserver","teleportasync"}
+local function isTP(r)
+    local n=r.Name:lower(); for _,kw in ipairs(SKIP_KWS) do if n:find(kw) then return true end end
+    local path=r:GetFullName():lower(); return path:find("teleport") and (path:find("place") or path:find("server") or path:find("join"))
+end
+
+local EXPLOIT_CATS={
+    {tag="FLING",col=T.H_WARN,kws={"fling","launch","throw","ragdoll","knockback","yeet","push"}},
+    {tag="KILL",col=T.H_RED,kws={"kill","die","damage","hurt","eliminate","slay"}},
+    {tag="BAN",col=T.H_RED,kws={"ban","kick","punish","suspend","blacklist","boot"}},
+    {tag="ADMIN",col=T.H_WARN,kws={"admin","owner","op","promote","demote","grant"}},
+    {tag="CURRENCY",col=T.SUCCESS,kws={"givecash","addcoin","givemoney","addmoney","givegems","addbucks"}},
+    {tag="SPAWN",col=T.H_FG,kws={"spawn","give","tool","weapon","sword","gun","item"}},
+    {tag="DATA",col=Color3.fromRGB(100,200,255),kws={"data","save","load","store","profile","stats"}},
+    {tag="GAMESTATE",col=T.H_WARN,kws={"start","win","reset","restart","round","intermission"}},
+}
+local function getTags(r)
+    local tags={}; local name=r.Name:lower()
+    for _,cat in ipairs(EXPLOIT_CATS) do for _,kw in ipairs(cat.kws) do if name:find(kw) then table.insert(tags,cat); break end end end
+    return tags
+end
+
+local function makePopup(remote,tags)
+    local pid=remote:GetFullName()
+    if N.exploitPopups[pid] then N.exploitPopups[pid]:Destroy(); N.exploitPopups[pid]=nil; return end
+    local popup=new("Frame",Screen,{Size=UDim2.new(0,280,0,0),Position=UDim2.new(.5,-140,.5,-120),BackgroundColor3=T.H_BG,BorderSizePixel=0,ZIndex=500,ClipsDescendants=false,AutomaticSize=Enum.AutomaticSize.Y})
+    rnd(popup,10); str(popup,T.H_FG,1); N.exploitPopups[pid]=popup
+    local ph=new("Frame",popup,{Size=UDim2.new(1,0,0,32),BackgroundColor3=Color3.fromRGB(0,16,5),BorderSizePixel=0,ZIndex=501}) rnd(ph,10)
+    new("Frame",ph,{Size=UDim2.new(1,0,0,10),Position=UDim2.new(0,0,1,-10),BackgroundColor3=Color3.fromRGB(0,16,5),BorderSizePixel=0,ZIndex=501})
+    new("Frame",ph,{Size=UDim2.new(1,0,0,1),Position=UDim2.new(0,0,1,-1),BackgroundColor3=T.H_DIM,BorderSizePixel=0,ZIndex=502})
+    new("TextLabel",ph,{Text="☠ "..remote.Name,TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=12,BackgroundTransparency=1,Size=UDim2.new(1,-30,1,0),Position=UDim2.new(0,8,0,0),TextXAlignment=Enum.TextXAlignment.Left,ZIndex=502,TextTruncate=Enum.TextTruncate.AtEnd})
+    local pc=new("TextButton",ph,{Text="×",TextColor3=T.H_DIM,Font=Enum.Font.GothamBold,TextSize=14,BackgroundTransparency=1,Size=UDim2.new(0,28,1,0),Position=UDim2.new(1,-28,0,0),AutoButtonColor=false,ZIndex=503})
+    pc.MouseButton1Click:Connect(function() popup:Destroy(); N.exploitPopups[pid]=nil end)
+    new("TextLabel",popup,{Text=remote:GetFullName(),TextColor3=T.H_DIM,Font=Enum.Font.Code,TextSize=9,BackgroundTransparency=1,Size=UDim2.new(1,-16,0,14),Position=UDim2.new(0,8,0,34),TextXAlignment=Enum.TextXAlignment.Left,ZIndex=502,TextTruncate=Enum.TextTruncate.AtEnd})
+    local tagRow=new("Frame",popup,{Size=UDim2.new(1,-16,0,22),Position=UDim2.new(0,8,0,52),BackgroundTransparency=1,ZIndex=502}) lst(tagRow,Enum.FillDirection.Horizontal,Enum.HorizontalAlignment.Left,3)
+    for _,tag in ipairs(tags) do
+        local tf=new("Frame",tagRow,{Size=UDim2.new(0,0,1,0),BackgroundColor3=tag.col:lerp(T.BLACK,.7),BorderSizePixel=0,ZIndex=503,AutomaticSize=Enum.AutomaticSize.X}) rnd(tf,4); pad(tf,0,6,0,6)
+        new("TextLabel",tf,{Text=tag.tag,TextColor3=tag.col,Font=Enum.Font.GothamBold,TextSize=9,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),ZIndex=504,AutomaticSize=Enum.AutomaticSize.X})
+    end
+    local af=new("Frame",popup,{Size=UDim2.new(1,-16,0,0),Position=UDim2.new(0,8,0,80),BackgroundTransparency=1,ZIndex=502,AutomaticSize=Enum.AutomaticSize.Y}) lst(af,Enum.FillDirection.Vertical,Enum.HorizontalAlignment.Left,4)
+    local function pBtn(text,col,cb)
+        local f=new("Frame",af,{Size=UDim2.new(1,0,0,28),BackgroundColor3=col:lerp(T.BLACK,.75),BorderSizePixel=0,ZIndex=503}) rnd(f,6); str(f,col,1)
+        local b=new("TextButton",f,{Text=text,TextColor3=col,Font=Enum.Font.GothamBold,TextSize=11,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=504})
+        b.MouseEnter:Connect(function() tw(f,{BackgroundColor3=col:lerp(T.BLACK,.55)},.1) end)
+        b.MouseLeave:Connect(function() tw(f,{BackgroundColor3=col:lerp(T.BLACK,.75)},.1) end)
+        b.MouseButton1Click:Connect(cb); return b
+    end
+    pBtn("▶ Fire Once",T.H_FG,function() local ok,err=pcall(function() if remote:IsA("RemoteEvent") then remote:FireServer() else remote:InvokeServer() end end); termPrint(ok and "> Fired: "..remote.Name or "> Error: "..tostring(err),ok and T.SUCCESS or T.H_RED) end)
+    local rsa=false; local rsBtnRef
+    rsBtnRef=pBtn("▶ Spam This",T.H_WARN,function()
+        rsa=not rsa
+        if rsa then rsBtnRef.Text="■ Stop Spam"; task.spawn(function() while rsa do pcall(function() if remote:IsA("RemoteEvent") then remote:FireServer() else remote:InvokeServer() end end) task.wait(.05) end end); termPrint("> Spamming: "..remote.Name,T.H_WARN)
+        else rsBtnRef.Text="▶ Spam This"; termPrint("> Stopped: "..remote.Name) end
+    end)
+    for _,tag in ipairs(tags) do
+        if tag.tag=="KILL" then pBtn("💀 Kill All Players",T.H_RED,function() for _,p in ipairs(Players:GetPlayers()) do pcall(function() remote:FireServer(p) end); pcall(function() remote:FireServer(p.Character) end); pcall(function() remote:FireServer(p.UserId) end) end; termPrint("> Kill fired on all players",T.H_RED) end) end
+        if tag.tag=="FLING" then pBtn("⚡ Fling All Players",T.H_WARN,function() for _,p in ipairs(Players:GetPlayers()) do pcall(function() remote:FireServer(p) end); pcall(function() remote:FireServer(p.Character) end) local r=p.Character and p.Character:FindFirstChild("HumanoidRootPart"); if r then pcall(function() remote:FireServer(r) end) end end; termPrint("> Fling fired",T.H_WARN) end) end
+        if tag.tag=="BAN" then pBtn("🔨 Kick/Ban All",T.H_RED,function() for _,p in ipairs(Players:GetPlayers()) do if p~=Player then pcall(function() remote:FireServer(p) end); pcall(function() remote:FireServer(p.UserId) end) end end; termPrint("> Ban fired",T.H_RED) end) end
+        if tag.tag=="CURRENCY" then pBtn("💰 Max Currency",T.SUCCESS,function() for _,n in ipairs({999999,math.huge,2^53,2147483647}) do pcall(function() remote:FireServer(n) end); pcall(function() remote:FireServer(Player,n) end) end; termPrint("> Currency exploit fired",T.SUCCESS) end) end
+        if tag.tag=="ADMIN" then pBtn("👑 Grant Admin",T.H_WARN,function() pcall(function() remote:FireServer(Player) end); pcall(function() remote:FireServer(Player.Name) end); pcall(function() remote:FireServer(Player,"admin") end); termPrint("> Admin grant fired",T.H_WARN) end) end
+        if tag.tag=="SPAWN" then pBtn("🎁 Get Items",T.H_FG,function() for _,g in ipairs({"Sword","Gun","Tool","All","*"}) do pcall(function() remote:FireServer(g) end) end; termPrint("> Spawn fired",T.H_FG) end) end
+        if tag.tag=="GAMESTATE" then pBtn("🎮 Force Game Event",T.H_WARN,function() for _,a in ipairs({"Start","Win","Reset","skip",1,true}) do pcall(function() remote:FireServer(a) end) end; termPrint("> GameState fired",T.H_WARN) end) end
+    end
+    local nta=false; local nBRef
+    nBRef=pBtn("☢ NUKE (10t, 0 delay)",T.H_RED,function()
+        nta=not nta
+        if nta then nBRef.Text="■ STOP NUKE"; for _=1,10 do task.spawn(function() while nta do pcall(function() if remote:IsA("RemoteEvent") then remote:FireServer() else remote:InvokeServer() end end) task.wait(0) end end) end; termPrint("> ☢ NUKING: "..remote.Name,T.H_RED)
+        else nBRef.Text="☢ NUKE (10t, 0 delay)"; termPrint("> Nuke stopped") end
+    end)
+    new("Frame",popup,{Size=UDim2.new(1,0,0,8),BackgroundTransparency=1,ZIndex=502})
+    local pDA,pDS,pDO=false,nil,nil
+    ph.InputBegan:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 then pDA=true;pDS=i.Position;pDO=popup.Position end end)
+    UserInputService.InputChanged:Connect(function(i) if pDA and i.UserInputType==Enum.UserInputType.MouseMovement then local d=i.Position-pDS; popup.Position=UDim2.new(pDO.X.Scale,pDO.X.Offset+d.X,pDO.Y.Scale,pDO.Y.Offset+d.Y) end end)
+    UserInputService.InputEnded:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 then pDA=false end end)
+    tw(popup,{BackgroundTransparency=0},.2)
+end
+
+local DeepScanBtn=hBtn("🔬  Deep Scan All Remotes",T.H_FG,"Tags every remote, click any to get exploit popup")
+sectionOrder=sectionOrder+1
+local ExploitList=new("Frame",N.HackScroll,{Size=UDim2.new(1,0,0,0),BackgroundTransparency=1,AutomaticSize=Enum.AutomaticSize.Y,ZIndex=8,LayoutOrder=sectionOrder,Visible=false})
+sectionOrder=sectionOrder+1
+
+DeepScanBtn.MouseButton1Click:Connect(function()
+    termClear(); termPrint("> DEEP SCANNING..."); task.wait(.2)
+    N.scannedRemotes={}
+    for _,c in ipairs(ExploitList:GetChildren()) do if not c:IsA("UIListLayout") then c:Destroy() end end
+    local clientPaths={"StarterGui","StarterPack","StarterPlayer","PlayerGui","Backpack"}
+    local skipped,tagged,total=0,0,0
+    pcall(function()
+        for _,v in ipairs(game:GetDescendants()) do
+            if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
+                total=total+1
+                if isTP(v) then skipped=skipped+1
+                else
+                    local path=v:GetFullName(); local isC=false
+                    for _,cp in ipairs(clientPaths) do if path:find(cp) then isC=true;break end end
+                    local tags=getTags(v); if #tags>0 then tagged=tagged+1 end
+                    table.insert(N.scannedRemotes,{remote=v,tags=tags,isClient=isC})
+                end
+            end
+        end
+    end)
+    table.sort(N.scannedRemotes,function(a,b) if #a.tags~=#b.tags then return #a.tags>#b.tags end return a.remote.Name<b.remote.Name end)
+    termPrint("> Total:"..total.." Skip:"..skipped.." Tagged:"..tagged)
+    for _,entry in ipairs(N.scannedRemotes) do
+        local remote,tags,isCS=entry.remote,entry.tags,entry.isClient
+        local rowF=new("Frame",ExploitList,{Size=UDim2.new(1,0,0,26),BackgroundColor3=#tags>0 and Color3.fromRGB(0,20,6) or T.H_DARK,BorderSizePixel=0,ZIndex=9})
+        rnd(rowF,5); if #tags>0 then str(rowF,tags[1].col,1) else str(rowF,T.H_DIM,1) end
+        local icon=#tags>0 and "⚡" or (isCS and "🔵" or "⚪")
+        new("TextLabel",rowF,{Text=icon,TextColor3=T.H_FG,Font=Enum.Font.GothamBold,TextSize=11,BackgroundTransparency=1,Size=UDim2.new(0,22,1,0),Position=UDim2.new(0,4,0,0),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=10})
+        new("TextLabel",rowF,{Text=remote.Name,TextColor3=#tags>0 and tags[1].col or T.H_DIM,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,-30,1,0),Position=UDim2.new(0,26,0,0),TextXAlignment=Enum.TextXAlignment.Left,ZIndex=10,TextTruncate=Enum.TextTruncate.AtEnd})
+        local cb=new("TextButton",rowF,{Text="",BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=11})
+        local capR,capT=remote,tags
+        cb.MouseButton1Click:Connect(function() makePopup(capR,capT) end)
+        rowF.MouseEnter:Connect(function() tw(rowF,{BackgroundColor3=#tags>0 and Color3.fromRGB(0,35,10) or T.H_MED},.1) end)
+        rowF.MouseLeave:Connect(function() tw(rowF,{BackgroundColor3=#tags>0 and Color3.fromRGB(0,20,6) or T.H_DARK},.1) end)
+    end
+    ExploitList.Visible=true
+    termPrint("> Click any remote to open exploit popup",T.H_DIM)
+end)
+
+local MassBtn=hBtn("💥  Mass Spam ALL Remotes",T.H_RED,"One thread per remote, all firing simultaneously")
+sectionOrder=sectionOrder+1
+local MCDRow=new("Frame",N.HackScroll,{Size=UDim2.new(1,0,0,26),BackgroundColor3=T.H_DARK,BorderSizePixel=0,ZIndex=9,LayoutOrder=sectionOrder})
+rnd(MCDRow,6); str(MCDRow,T.H_DIM,1); pad(MCDRow,0,8,0,8); lst(MCDRow,Enum.FillDirection.Horizontal,Enum.HorizontalAlignment.Left,4); sectionOrder=sectionOrder+1
+new("TextLabel",MCDRow,{Text="CD:",TextColor3=T.H_DIM,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(0,28,1,0),ZIndex=10})
+local MCDLabel=new("TextLabel",MCDRow,{Text="0.20s",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(0,40,1,0),ZIndex=10})
+local function mcdBtn(label,delta)
+    local f=new("Frame",MCDRow,{Size=UDim2.new(0,36,0,20),BackgroundColor3=T.H_MED,BorderSizePixel=0,ZIndex=10}) rnd(f,4); str(f,T.H_DIM,1)
+    local b=new("TextButton",f,{Text=label,TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=11})
+    b.MouseButton1Click:Connect(function() N.massSpamCooldown=math.clamp(N.massSpamCooldown+delta,0,5); MCDLabel.Text=("%.2fs"):format(N.massSpamCooldown) end)
+end
+mcdBtn("−−",-.1); mcdBtn("−",-.01); mcdBtn("+", .01); mcdBtn("++", .1)
+
+MassBtn.MouseButton1Click:Connect(function()
+    if N.massSpamActive then N.massSpamActive=false; MassBtn.Text="💥  Mass Spam ALL Remotes"; termPrint("> Mass spam stopped"); return end
+    local targets={}; local clientPaths={"StarterGui","StarterPack","StarterPlayer","PlayerGui","Backpack"}
+    pcall(function() for _,v in ipairs(game:GetDescendants()) do if (v:IsA("RemoteEvent") or v:IsA("RemoteFunction")) and not isTP(v) then local path=v:GetFullName(); local isC=false; for _,cp in ipairs(clientPaths) do if path:find(cp) then isC=true;break end end; if not isC then table.insert(targets,v) end end end end)
+    if #targets==0 then termPrint("> No spammable remotes!",T.H_RED); return end
+    N.massSpamActive=true; MassBtn.Text="■  STOP MASS SPAM"
+    termPrint("> 💥 MASS SPAMMING "..#targets.." REMOTES",T.H_RED)
+    for _,remote in ipairs(targets) do
+        local cap=remote
+        task.spawn(function() while N.massSpamActive do pcall(function() if cap:IsA("RemoteEvent") then cap:FireServer() else cap:InvokeServer() end end) if N.massSpamCooldown>0 then task.wait(N.massSpamCooldown) else task.wait(0) end end end)
+    end
+end)
+
+
+-- ══════════════════════════════════════════════════
+-- GRIEF / PHYSICS / REAL EXPLOIT TOOLKIT
+-- Everything here works via physics manipulation,
+-- BodyMovers, RemoteEvent exploitation, and
+-- server-observable property changes. Not fake client
+-- visuals — actual game-affecting stuff.
+-- ══════════════════════════════════════════════════
+
+-- ── shared helpers ────────────────────────────────
+local function getTarget()
+    local name=(N.HackScroll:FindFirstChild("__TARGETBOX") and N.HackScroll:FindFirstChild("__TARGETBOX"):FindFirstChildOfClass("TextBox") and N.HackScroll:FindFirstChild("__TARGETBOX"):FindFirstChildOfClass("TextBox").Text) or ""
+    name=name:match("^%s*(.-)%s*$")
+    if name=="" then return Player end
+    for _,p in ipairs(Players:GetPlayers()) do if p.Name:lower():find(name:lower()) then return p end end
+end
+local function getTChar(p) p=p or getTarget(); local c=p and p.Character; if not c then return nil,nil,nil end; return c,c:FindFirstChildOfClass("Humanoid"),c:FindFirstChild("HumanoidRootPart") end
+local function allUnanchored()
+    local list={}
+    for _,v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("BasePart") and not v.Anchored and v.Name~="HumanoidRootPart" then
+            table.insert(list,v)
+        end
+    end
+    return list
+end
+local function charParts(p)
+    local t={}; if p and p.Character then for _,v in ipairs(p.Character:GetDescendants()) do if v:IsA("BasePart") then t[v]=true end end end; return t
+end
+
+-- ── Target box (shared across execute + grief) ────
+section("── EXECUTE ────────────────────────────────────")
+sectionOrder=sectionOrder+1
+local TRowF=new("Frame",N.HackScroll,{Size=UDim2.new(1,0,0,30),Name="__TARGETBOX",BackgroundColor3=T.H_DARK,BorderSizePixel=0,ZIndex=9,LayoutOrder=sectionOrder})
+rnd(TRowF,6); str(TRowF,T.H_DIM,1); pad(TRowF,0,8,0,8); lst(TRowF,Enum.FillDirection.Horizontal,Enum.HorizontalAlignment.Left,4); sectionOrder=sectionOrder+1
+new("TextLabel",TRowF,{Text="Target:",TextColor3=T.H_DIM,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(0,46,1,0),ZIndex=10})
+local TargetBox=new("TextBox",TRowF,{Text="",PlaceholderText="player (blank=you)",PlaceholderColor3=T.H_DIM,TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,BorderSizePixel=0,Size=UDim2.new(1,-50,1,0),ZIndex=10,ClearTextOnFocus=false})
+
+-- Fling
+local FlingBtn=hBtn("⚡  Fling Target",T.H_WARN,"BodyVelocity + Physics state override on target's root")
+FlingBtn.MouseButton1Click:Connect(function()
+    local t=getTarget(); if not t then termPrint("> Not found",T.H_RED) return end
+    local _,hum,root=getTChar(t); if not root then termPrint("> No character",T.H_RED) return end
+    pcall(function()
+        for _,v in ipairs(root:GetChildren()) do if v:IsA("BodyVelocity") or v:IsA("BodyForce") then v:Destroy() end end
+        local bv=Instance.new("BodyVelocity")
+        bv.Velocity=Vector3.new(math.random(-1,1)*9999,9999,math.random(-1,1)*9999)
+        bv.MaxForce=Vector3.new(math.huge,math.huge,math.huge); bv.P=math.huge; bv.Parent=root
+        if hum then hum:ChangeState(Enum.HumanoidStateType.Physics) end
+        task.delay(.15,function() pcall(function() bv:Destroy() end) end)
+    end)
+    termPrint("> Flung: "..t.Name,T.H_WARN)
+end)
+
+-- Fling all players simultaneously
+local FlingAllBtn=hBtn("⚡⚡  Fling ALL Players",T.H_RED,"BodyVelocity on every player's HumanoidRootPart at once")
+FlingAllBtn.MouseButton1Click:Connect(function()
+    local count=0
+    for _,p in ipairs(Players:GetPlayers()) do
+        local _,hum,root=getTChar(p)
+        if root then
+            pcall(function()
+                for _,v in ipairs(root:GetChildren()) do if v:IsA("BodyVelocity") then v:Destroy() end end
+                local bv=Instance.new("BodyVelocity")
+                bv.Velocity=Vector3.new(math.random(-1,1)*9999,9999,math.random(-1,1)*9999)
+                bv.MaxForce=Vector3.new(math.huge,math.huge,math.huge); bv.P=math.huge; bv.Parent=root
+                if hum then hum:ChangeState(Enum.HumanoidStateType.Physics) end
+                task.delay(.15,function() pcall(function() bv:Destroy() end) end)
+                count=count+1
+            end)
+        end
+    end
+    termPrint("> Flung "..count.." players",T.H_RED)
+end)
+
+-- Kill
+local KillBtn=hBtn("💀  Kill Target",T.H_RED,"Sets Humanoid.Health = 0")
+KillBtn.MouseButton1Click:Connect(function()
+    local t=getTarget(); if not t then termPrint("> Not found",T.H_RED) return end
+    local _,hum=getTChar(t); if not hum then termPrint("> No humanoid",T.H_RED) return end
+    pcall(function() hum.Health=0 end); termPrint("> Killed: "..t.Name,T.H_RED)
+end)
+
+-- Freeze
+local FreezeBtn=hBtn("🧊  Freeze/Unfreeze Target",Color3.fromRGB(100,200,255),"Anchors the HumanoidRootPart in place")
+FreezeBtn.MouseButton1Click:Connect(function()
+    local t=getTarget(); if not t then termPrint("> Not found",T.H_RED) return end
+    local _,_,root=getTChar(t); if not root then termPrint("> No character",T.H_RED) return end
+    if N.frozenParts[t] then pcall(function() root.Anchored=false end); N.frozenParts[t]=nil; termPrint("> Unfroze: "..t.Name,T.SUCCESS)
+    else pcall(function() root.Anchored=true end); N.frozenParts[t]=true; termPrint("> Froze: "..t.Name,Color3.fromRGB(100,200,255)) end
+end)
+
+-- TP
+local TPToBtn=hBtn("📍  TP To Target",T.H_FG,"Sets your CFrame to target's position")
+TPToBtn.MouseButton1Click:Connect(function()
+    local t=getTarget(); if not t then termPrint("> Not found",T.H_RED) return end
+    local _,_,tRoot=getTChar(t); if not tRoot then termPrint("> No character",T.H_RED) return end
+    local myRoot=Player.Character and Player.Character:FindFirstChild("HumanoidRootPart"); if not myRoot then return end
+    pcall(function() myRoot.CFrame=tRoot.CFrame*CFrame.new(3,0,0) end); termPrint("> TP to "..t.Name,T.SUCCESS)
+end)
+
+local TPHereBtn=hBtn("📍  TP Target To You",T.H_FG,"Moves target's root to your position")
+TPHereBtn.MouseButton1Click:Connect(function()
+    local t=getTarget(); if not t then termPrint("> Not found",T.H_RED) return end
+    local _,_,tRoot=getTChar(t); if not tRoot then termPrint("> No character",T.H_RED) return end
+    local myRoot=Player.Character and Player.Character:FindFirstChild("HumanoidRootPart"); if not myRoot then return end
+    pcall(function() tRoot.CFrame=myRoot.CFrame*CFrame.new(3,0,0) end); termPrint("> Pulled "..t.Name,T.SUCCESS)
+end)
+
+-- Noclip + invis + speed + jump
+local NoclipBtn=hBtn("👁  Toggle Noclip",T.H_FG,"Disables CanCollide every frame via Stepped")
+NoclipBtn.MouseButton1Click:Connect(function()
+    N.noclipActive=not N.noclipActive
+    if N.noclipActive then
+        N.noclipConn=RunService.Stepped:Connect(function() local c=Player.Character; if c then for _,p in ipairs(c:GetDescendants()) do if p:IsA("BasePart") then pcall(function() p.CanCollide=false end) end end end end)
+        termPrint("> NOCLIP ON",T.SUCCESS)
+    else
+        if N.noclipConn then N.noclipConn:Disconnect(); N.noclipConn=nil end
+        local c=Player.Character; if c then for _,p in ipairs(c:GetDescendants()) do if p:IsA("BasePart") then pcall(function() p.CanCollide=true end) end end end
+        termPrint("> NOCLIP OFF",T.H_DIM)
+    end
+end)
+
+local InvisBtn=hBtn("👻  Toggle Invisible",T.H_FG,"LocalTransparencyModifier = 1 on all your parts")
+InvisBtn.MouseButton1Click:Connect(function()
+    local char=Player.Character; if not char then termPrint("> No character",T.H_RED) return end
+    N.isInvis=not N.isInvis
+    for _,p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") and p.Name~="HumanoidRootPart" then pcall(function() p.LocalTransparencyModifier=N.isInvis and 1 or 0 end) end
+    end
+    termPrint(N.isInvis and "> INVISIBLE" or "> VISIBLE",T.SUCCESS)
+end)
+
+sectionOrder=sectionOrder+1
+local SpdRow=new("Frame",N.HackScroll,{Size=UDim2.new(1,0,0,28),BackgroundColor3=T.H_DARK,BorderSizePixel=0,ZIndex=9,LayoutOrder=sectionOrder})
+rnd(SpdRow,6); str(SpdRow,T.H_DIM,1); pad(SpdRow,0,8,0,8); lst(SpdRow,Enum.FillDirection.Horizontal,Enum.HorizontalAlignment.Left,4); sectionOrder=sectionOrder+1
+new("TextLabel",SpdRow,{Text="WalkSpeed:",TextColor3=T.H_DIM,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(0,66,1,0),ZIndex=10})
+local SpdBox=new("TextBox",SpdRow,{Text="50",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=11,BackgroundTransparency=1,BorderSizePixel=0,Size=UDim2.new(0,44,1,0),ZIndex=10,ClearTextOnFocus=false})
+local SF=new("Frame",SpdRow,{Size=UDim2.new(0,40,0,22),BackgroundColor3=T.H_MED,BorderSizePixel=0,ZIndex=10}) rnd(SF,4); str(SF,T.H_FG,1)
+local SB=new("TextButton",SF,{Text="SET",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=11})
+local RF2=new("Frame",SpdRow,{Size=UDim2.new(0,50,0,22),BackgroundColor3=T.H_DARK,BorderSizePixel=0,ZIndex=10}) rnd(RF2,4); str(RF2,T.H_DIM,1)
+local RB2=new("TextButton",RF2,{Text="RESET",TextColor3=T.H_DIM,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=11})
+SB.MouseButton1Click:Connect(function() local h=Player.Character and Player.Character:FindFirstChildOfClass("Humanoid"); if h then pcall(function() h.WalkSpeed=tonumber(SpdBox.Text) or 50 end); termPrint("> Speed: "..SpdBox.Text,T.SUCCESS) end end)
+RB2.MouseButton1Click:Connect(function() local h=Player.Character and Player.Character:FindFirstChildOfClass("Humanoid"); if h then pcall(function() h.WalkSpeed=16 end) end; termPrint("> Speed reset") end)
+
+sectionOrder=sectionOrder+1
+local JmpRow=new("Frame",N.HackScroll,{Size=UDim2.new(1,0,0,28),BackgroundColor3=T.H_DARK,BorderSizePixel=0,ZIndex=9,LayoutOrder=sectionOrder})
+rnd(JmpRow,6); str(JmpRow,T.H_DIM,1); pad(JmpRow,0,8,0,8); lst(JmpRow,Enum.FillDirection.Horizontal,Enum.HorizontalAlignment.Left,4); sectionOrder=sectionOrder+1
+new("TextLabel",JmpRow,{Text="JumpPower:",TextColor3=T.H_DIM,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(0,66,1,0),ZIndex=10})
+local JmpBox=new("TextBox",JmpRow,{Text="100",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=11,BackgroundTransparency=1,BorderSizePixel=0,Size=UDim2.new(0,44,1,0),ZIndex=10,ClearTextOnFocus=false})
+local JF=new("Frame",JmpRow,{Size=UDim2.new(0,40,0,22),BackgroundColor3=T.H_MED,BorderSizePixel=0,ZIndex=10}) rnd(JF,4); str(JF,T.H_FG,1)
+local JB=new("TextButton",JF,{Text="SET",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=11})
+JB.MouseButton1Click:Connect(function() local h=Player.Character and Player.Character:FindFirstChildOfClass("Humanoid"); if h then pcall(function() h.JumpPower=tonumber(JmpBox.Text) or 100 end); termPrint("> Jump: "..JmpBox.Text,T.SUCCESS) end end)
+
+-- ══ TOOLS ═════════════════════════════════════════
+section("── TOOLS ──────────────────────────────────────")
+local DumpBtn=hBtn("📋  Dump All Remotes",T.H_FG,"Lists every RemoteEvent and RemoteFunction")
+DumpBtn.MouseButton1Click:Connect(function()
+    termClear(); termPrint("> DUMPING..."); task.wait(.1); local c=0
+    pcall(function() for _,v in ipairs(game:GetDescendants()) do if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then termPrint("  ["..v.ClassName.."] "..v:GetFullName()); c=c+1 end end end)
+    termPrint("> Total: "..c)
+end)
+local PlrBtn=hBtn("👥  Player Info Dump",T.H_FG,"Lists all players, IDs, teams, HP")
+PlrBtn.MouseButton1Click:Connect(function()
+    termClear(); termPrint("> PLAYERS:")
+    for _,p in ipairs(Players:GetPlayers()) do
+        local team=p.Team and p.Team.Name or "none"; local hp="?"
+        if p.Character then local h=p.Character:FindFirstChildOfClass("Humanoid"); if h then hp=math.floor(h.Health).."/"..math.floor(h.MaxHealth) end end
+        termPrint("  "..p.Name.." | id:"..p.UserId.." | team:"..team.." | hp:"..hp)
+    end
+end)
+
+-- ══ DUPE ══════════════════════════════════════════
+section("── DUPE ───────────────────────────────────────")
+
+local Dupe1Btn=hBtn("🔀  Dupe Tools — Method 1 (Clone)",T.SUCCESS,"Clones every tool in your backpack+char back into backpack")
+Dupe1Btn.MouseButton1Click:Connect(function()
+    local bp=Player:FindFirstChild("Backpack"); if not bp then termPrint("> No backpack",T.H_RED) return end
+    local tools={}
+    for _,t in ipairs(bp:GetChildren()) do if t:IsA("Tool") then table.insert(tools,t) end end
+    if Player.Character then for _,t in ipairs(Player.Character:GetChildren()) do if t:IsA("Tool") then table.insert(tools,t) end end end
+    if #tools==0 then termPrint("> No tools found",T.H_RED) return end
+    local n=0
+    for _,tool in ipairs(tools) do pcall(function() local c=tool:Clone(); c.Parent=bp; n=n+1 end) end
+    termPrint("> Duped "..n.." tool(s)",T.SUCCESS)
+end)
+
+local dupe2On=false
+local Dupe2Btn=hBtn("🔄  Dupe Tools — Method 2 (Drop+Respawn Loop)",T.SUCCESS,"Drops tools to workspace, force respawns, walks over them — loops")
+Dupe2Btn.MouseButton1Click:Connect(function()
+    dupe2On=not dupe2On
+    if not dupe2On then Dupe2Btn.Text="🔄  Dupe Tools — Method 2 (Drop+Respawn Loop)"; termPrint("> Dupe loop stopped"); return end
+    Dupe2Btn.Text="■ Stop Dupe Loop"
+    termPrint("> DUPE LOOP STARTED",T.SUCCESS)
+    task.spawn(function()
+        while dupe2On do
+            local bp=Player:FindFirstChild("Backpack"); local char=Player.Character
+            local dropped={}
+            -- drop all tools
+            if bp then for _,t in ipairs(bp:GetChildren()) do if t:IsA("Tool") then
+                pcall(function()
+                    local root=char and char:FindFirstChild("HumanoidRootPart")
+                    local pos=root and root.Position+Vector3.new(math.random(-5,5),0,math.random(-5,5)) or Vector3.new(0,5,0)
+                    t.Parent=workspace
+                    if t:FindFirstChild("Handle") then t.Handle.CFrame=CFrame.new(pos) end
+                    table.insert(dropped,t)
+                end)
+            end end end
+            if char then for _,t in ipairs(char:GetChildren()) do if t:IsA("Tool") then
+                pcall(function() t.Parent=workspace; table.insert(dropped,t) end)
+            end end end
+            if #dropped==0 then termPrint("> No tools",T.H_RED); dupe2On=false; Dupe2Btn.Text="🔄  Dupe Tools — Method 2 (Drop+Respawn Loop)"; return end
+            task.wait(.05)
+            pcall(function() Player:LoadCharacter() end)
+            task.wait(1.5)
+            -- pick up by walking root onto each dropped tool
+            local newChar=Player.Character; local newRoot=newChar and newChar:FindFirstChild("HumanoidRootPart")
+            local newBp=Player:FindFirstChild("Backpack")
+            for _,tool in ipairs(dropped) do pcall(function()
+                if tool and tool.Parent==workspace then
+                    if newRoot and tool:FindFirstChild("Handle") then newRoot.CFrame=CFrame.new(tool.Handle.Position+Vector3.new(0,3,0)) end
+                    task.wait(.08)
+                    if tool.Parent==workspace and newBp then tool.Parent=newBp end
+                end
+            end) end
+            local cnt=newBp and #newBp:GetChildren() or 0
+            termPrint("> Cycle done — backpack: "..cnt.." items",T.SUCCESS)
+            task.wait(.3)
+        end
+    end)
+end)
+
+-- ══ GRIEF — REAL PHYSICS / EXPLOIT LEVEL ══════════
+section("── GRIEF [REAL] ───────────────────────────────")
+
+-- 1. Part Orbital Nuke — launches all unanchored parts at players
+local OrbNukeBtn=hBtn("☄️  Part Orbital Nuke",T.H_RED,"Fires every unanchored part in workspace at every player like missiles")
+OrbNukeBtn.MouseButton1Click:Connect(function()
+    termPrint("> LAUNCHING ORBITAL NUKE...",T.H_RED)
+    local parts=allUnanchored(); local plrs=Players:GetPlayers()
+    if #parts==0 then termPrint("> No unanchored parts found",T.H_DIM) return end
+    local count=0
+    for _,part in ipairs(parts) do
+        task.spawn(function()
+            pcall(function()
+                -- pick a random player to target
+                local target=plrs[math.random(1,#plrs)]
+                local tRoot=target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+                if not tRoot then return end
+                -- clear existing movers
+                for _,v in ipairs(part:GetChildren()) do if v:IsA("BodyVelocity") or v:IsA("BodyMover") then v:Destroy() end end
+                local dir=(tRoot.Position - part.Position).Unit
+                local bv=Instance.new("BodyVelocity")
+                bv.Velocity = dir * (800 + math.random(0,400))
+                bv.MaxForce = Vector3.new(math.huge,math.huge,math.huge)
+                bv.P = math.huge; bv.Parent=part
+                count=count+1
+                task.delay(3, function() pcall(function() bv:Destroy() end) end)
+            end)
+        end)
+    end
+    task.wait(.5); termPrint("> Launched "..count.." parts at players",T.H_RED)
+end)
+
+-- 2. Gravity Well — continuous BodyVelocity pull toward your position
+local wellOn=false; local wellConn=nil
+local GravWellBtn=hBtn("🌀  Gravity Well (Pull Everything To You)",T.H_RED,"Applies continuous BodyVelocity inward on every unanchored part/player in range")
+GravWellBtn.MouseButton1Click:Connect(function()
+    wellOn=not wellOn
+    if wellOn then
+        GravWellBtn.Text="■ Stop Gravity Well"
+        termPrint("> 🌀 GRAVITY WELL ACTIVE",T.H_RED)
+        wellConn=RunService.Heartbeat:Connect(function()
+            local myRoot=Player.Character and Player.Character:FindFirstChild("HumanoidRootPart"); if not myRoot then return end
+            local center=myRoot.Position
+            pcall(function()
+                for _,v in ipairs(workspace:GetDescendants()) do
+                    if v:IsA("BasePart") and not v.Anchored and v~=myRoot then
+                        local d=center-v.Position; local dist=d.Magnitude
+                        if dist<80 and dist>0.5 then
+                            local bv=v:FindFirstChild("__GW")
+                            if not bv then bv=Instance.new("BodyVelocity"); bv.Name="__GW"; bv.MaxForce=Vector3.new(math.huge,math.huge,math.huge); bv.Parent=v end
+                            bv.Velocity=d.Unit*(3500/(dist+1))
+                        end
+                    end
+                end
+            end)
+        end)
+    else
+        GravWellBtn.Text="🌀  Gravity Well (Pull Everything To You)"
+        if wellConn then wellConn:Disconnect(); wellConn=nil end
+        pcall(function() for _,v in ipairs(workspace:GetDescendants()) do local bv=v:FindFirstChild("__GW"); if bv then bv:Destroy() end end end)
+        termPrint("> Gravity well stopped",T.SUCCESS)
+    end
+end)
+
+-- 3. Repulsor — opposite of gravity well, blast everything away
+local repOn=false; local repConn=nil
+local RepulsorBtn=hBtn("💥  Repulsor (Blast Everything Away)",T.H_RED,"Pushes all unanchored parts and players away from you at massive speed")
+RepulsorBtn.MouseButton1Click:Connect(function()
+    repOn=not repOn
+    if repOn then
+        RepulsorBtn.Text="■ Stop Repulsor"
+        termPrint("> 💥 REPULSOR ACTIVE",T.H_RED)
+        repConn=RunService.Heartbeat:Connect(function()
+            local myRoot=Player.Character and Player.Character:FindFirstChild("HumanoidRootPart"); if not myRoot then return end
+            local center=myRoot.Position
+            pcall(function()
+                for _,v in ipairs(workspace:GetDescendants()) do
+                    if v:IsA("BasePart") and not v.Anchored and v~=myRoot then
+                        local d=v.Position-center; local dist=d.Magnitude
+                        if dist<60 and dist>0.1 then
+                            local bv=v:FindFirstChild("__RP")
+                            if not bv then bv=Instance.new("BodyVelocity"); bv.Name="__RP"; bv.MaxForce=Vector3.new(math.huge,math.huge,math.huge); bv.Parent=v end
+                            bv.Velocity=d.Unit*(4000/(dist+0.5))
+                        end
+                    end
+                end
+            end)
+        end)
+    else
+        RepulsorBtn.Text="💥  Repulsor (Blast Everything Away)"
+        if repConn then repConn:Disconnect(); repConn=nil end
+        pcall(function() for _,v in ipairs(workspace:GetDescendants()) do local bv=v:FindFirstChild("__RP"); if bv then bv:Destroy() end end end)
+        termPrint("> Repulsor stopped",T.SUCCESS)
+    end
+end)
+
+-- 4. Part Spin Chaos — spins all unanchored parts in place with BodyAngularVelocity
+local spinOn=false; local spinConn=nil
+local PartSpinBtn=hBtn("🌪️  Part Spin Chaos",T.H_WARN,"Applies BodyAngularVelocity to every unanchored part — map becomes a blender")
+PartSpinBtn.MouseButton1Click:Connect(function()
+    spinOn=not spinOn
+    if spinOn then
+        PartSpinBtn.Text="■ Stop Spin"
+        termPrint("> 🌪️ SPIN CHAOS",T.H_WARN)
+        task.spawn(function()
+            local parts=allUnanchored()
+            for _,p in ipairs(parts) do pcall(function()
+                local ba=Instance.new("BodyAngularVelocity")
+                ba.Name="__SPIN"; ba.MaxTorque=Vector3.new(math.huge,math.huge,math.huge)
+                ba.AngularVelocity=Vector3.new(math.random(-50,50),math.random(-50,50),math.random(-50,50))
+                ba.Parent=p
+            end) end
+            termPrint("> Spinning "..#parts.." parts",T.H_WARN)
+        end)
+    else
+        PartSpinBtn.Text="🌪️  Part Spin Chaos"
+        spinOn=false
+        pcall(function() for _,v in ipairs(workspace:GetDescendants()) do local x=v:FindFirstChild("__SPIN"); if x then x:Destroy() end end end)
+        termPrint("> Spin stopped",T.SUCCESS)
+    end
+end)
+
+-- 5. Supernova — one massive explosion burst in every direction from you
+local SupernovaBtn=hBtn("💣  Supernova (You Are The Explosion)",T.H_RED,"Spawns a ring of max-force BodyVelocities around your position — everything near you gets launched")
+SupernovaBtn.MouseButton1Click:Connect(function()
+    local myRoot=Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then termPrint("> No character",T.H_RED) return end
+    local center=myRoot.Position; local count=0
+    termPrint("> 💣 SUPERNOVA",T.H_RED)
+    for _,v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("BasePart") and not v.Anchored and v~=myRoot then
+            task.spawn(function() pcall(function()
+                local dir=(v.Position-center); local dist=dir.Magnitude
+                if dist<120 then
+                    for _,old in ipairs(v:GetChildren()) do if old:IsA("BodyVelocity") then old:Destroy() end end
+                    local bv=Instance.new("BodyVelocity")
+                    bv.Velocity=(dist<0.5 and Vector3.new(math.random(-1,1),1,math.random(-1,1)) or dir.Unit)*math.random(4000,9999)
+                    bv.MaxForce=Vector3.new(math.huge,math.huge,math.huge); bv.P=math.huge; bv.Parent=v; count=count+1
+                    task.delay(1.5, function() pcall(function() bv:Destroy() end) end)
+                end
+            end) end)
+        end
+    end
+    task.wait(.3); termPrint("> Launched "..count.." objects",T.H_RED)
+end)
+
+-- 6. Trap Under Ground — moves target's root underground via CFrame loop
+local trapOn=false; local trapConn=nil
+local TrapBtn=hBtn("⬇️  Trap Target Underground",T.H_WARN,"Loops CFrame of target's root to keep them stuck under the map")
+TrapBtn.MouseButton1Click:Connect(function()
+    trapOn=not trapOn
+    if trapOn then
+        TrapBtn.Text="■ Release Trap"
+        local t=getTarget()
+        if not t then termPrint("> No target",T.H_RED); trapOn=false; TrapBtn.Text="⬇️  Trap Target Underground"; return end
+        termPrint("> TRAPPING: "..t.Name,T.H_WARN)
+        trapConn=RunService.Heartbeat:Connect(function()
+            pcall(function()
+                local root=t.Character and t.Character:FindFirstChild("HumanoidRootPart")
+                if root then root.CFrame=CFrame.new(root.Position.X,-500,root.Position.Z) end
+            end)
+        end)
+    else
+        TrapBtn.Text="⬇️  Trap Target Underground"
+        if trapConn then trapConn:Disconnect(); trapConn=nil end
+        termPrint("> Trap released",T.SUCCESS)
+    end
+end)
+
+-- 7. Infinite Fling Loop — continuously flings target every 0.3s
+local iflingOn=false
+local IFlingBtn=hBtn("⚡🔁  Infinite Fling Loop",T.H_RED,"Applies a new fling BodyVelocity to target every 0.3s — they can never land")
+IFlingBtn.MouseButton1Click:Connect(function()
+    iflingOn=not iflingOn
+    if iflingOn then
+        IFlingBtn.Text="■ Stop Infinite Fling"
+        local t=getTarget()
+        if not t then termPrint("> No target",T.H_RED); iflingOn=false; IFlingBtn.Text="⚡🔁  Infinite Fling Loop"; return end
+        termPrint("> INFINITE FLING: "..t.Name,T.H_RED)
+        task.spawn(function()
+            while iflingOn do
+                pcall(function()
+                    local root=t.Character and t.Character:FindFirstChild("HumanoidRootPart")
+                    local hum=t.Character and t.Character:FindFirstChildOfClass("Humanoid")
+                    if root then
+                        for _,v in ipairs(root:GetChildren()) do if v:IsA("BodyVelocity") then v:Destroy() end end
+                        local bv=Instance.new("BodyVelocity")
+                        bv.Velocity=Vector3.new(math.random(-1,1)*9999,9999,math.random(-1,1)*9999)
+                        bv.MaxForce=Vector3.new(math.huge,math.huge,math.huge); bv.P=math.huge; bv.Parent=root
+                        if hum then hum:ChangeState(Enum.HumanoidStateType.Physics) end
+                        task.delay(.2,function() pcall(function() bv:Destroy() end) end)
+                    end
+                end)
+                task.wait(.3)
+            end
+        end)
+    else
+        iflingOn=false; IFlingBtn.Text="⚡🔁  Infinite Fling Loop"
+        termPrint("> Infinite fling stopped",T.SUCCESS)
+    end
+end)
+
+-- 8. BodyPosition Anchor Cage — locks target at their current position
+local cageOn=false; local cageConn=nil; local cagePos=nil
+local CageBtn=hBtn("🔒  Cage Target (BodyPosition Lock)",T.H_WARN,"Continuously resets target's position to a fixed point — they literally cannot move")
+CageBtn.MouseButton1Click:Connect(function()
+    cageOn=not cageOn
+    if cageOn then
+        CageBtn.Text="■ Release Cage"
+        local t=getTarget()
+        if not t then termPrint("> No target",T.H_RED); cageOn=false; CageBtn.Text="🔒  Cage Target (BodyPosition Lock)"; return end
+        local root=t.Character and t.Character:FindFirstChild("HumanoidRootPart")
+        if not root then termPrint("> No root",T.H_RED); cageOn=false; CageBtn.Text="🔒  Cage Target (BodyPosition Lock)"; return end
+        cagePos=root.Position
+        termPrint("> CAGING: "..t.Name.." at "..tostring(cagePos),T.H_WARN)
+        cageConn=RunService.Heartbeat:Connect(function()
+            pcall(function()
+                local r2=t.Character and t.Character:FindFirstChild("HumanoidRootPart"); if not r2 then return end
+                local bp=r2:FindFirstChild("__CAGE")
+                if not bp then
+                    bp=Instance.new("BodyPosition"); bp.Name="__CAGE"
+                    bp.MaxForce=Vector3.new(math.huge,math.huge,math.huge); bp.P=math.huge; bp.D=1000
+                    bp.Parent=r2
+                end
+                bp.Position=cagePos
+            end)
+        end)
+    else
+        CageBtn.Text="🔒  Cage Target (BodyPosition Lock)"
+        if cageConn then cageConn:Disconnect(); cageConn=nil end
+        local t=getTarget()
+        if t and t.Character then local r=t.Character:FindFirstChild("HumanoidRootPart"); if r then local bp=r:FindFirstChild("__CAGE"); if bp then bp:Destroy() end end end
+        termPrint("> Cage released",T.SUCCESS)
+    end
+end)
+
+-- 9. Velocity Spam — continuously applies random velocities to a target
+local vspamOn=false
+local VSpamBtn=hBtn("🎲  Random Velocity Spam (Target)",T.H_RED,"Hits target with a new random BodyVelocity every frame — they bounce everywhere")
+VSpamBtn.MouseButton1Click:Connect(function()
+    vspamOn=not vspamOn
+    if vspamOn then
+        VSpamBtn.Text="■ Stop Velocity Spam"
+        local t=getTarget()
+        if not t then termPrint("> No target",T.H_RED); vspamOn=false; VSpamBtn.Text="🎲  Random Velocity Spam (Target)"; return end
+        termPrint("> VELOCITY SPAM: "..t.Name,T.H_RED)
+        task.spawn(function()
+            while vspamOn do
+                pcall(function()
+                    local root=t.Character and t.Character:FindFirstChild("HumanoidRootPart"); if not root then return end
+                    for _,v in ipairs(root:GetChildren()) do if v:IsA("BodyVelocity") then v:Destroy() end end
+                    local bv=Instance.new("BodyVelocity")
+                    bv.Velocity=Vector3.new(math.random(-3000,3000),math.random(-500,3000),math.random(-3000,3000))
+                    bv.MaxForce=Vector3.new(math.huge,math.huge,math.huge); bv.P=math.huge; bv.Parent=root
+                    task.delay(.08,function() pcall(function() bv:Destroy() end) end)
+                end)
+                task.wait(.06)
+            end
+        end)
+    else
+        vspamOn=false; VSpamBtn.Text="🎲  Random Velocity Spam (Target)"
+        termPrint("> Velocity spam stopped",T.SUCCESS)
+    end
+end)
+
+-- 10. Map Tilt — applies BodyAngularVelocity to all large unanchored baseplate-like parts
+local MapTiltBtn=hBtn("🌍  Tilt The Map",T.H_WARN,"Finds large baseplate-like parts and spins them — everyone slides off")
+MapTiltBtn.MouseButton1Click:Connect(function()
+    local count=0
+    for _,v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("BasePart") and not v.Anchored and v.Size.Magnitude>30 then
+            pcall(function()
+                local bav=Instance.new("BodyAngularVelocity"); bav.Name="__TILT"
+                bav.AngularVelocity=Vector3.new(math.random(-5,5),0,math.random(-5,5))
+                bav.MaxTorque=Vector3.new(math.huge,math.huge,math.huge); bav.Parent=v; count=count+1
+            end)
+        end
+    end
+    if count==0 then termPrint("> No large unanchored parts found — try unanchor first",T.H_DIM)
+    else termPrint("> Tilting "..count.." large parts",T.H_WARN) end
+end)
+
+-- 11. Unanchor Everything — removes Anchored from all workspace parts
+local UnanchorBtn=hBtn("🔓  Unanchor Entire Map",T.H_RED,"Sets Anchored=false on every BasePart in workspace — then use Part Orbital Nuke or Repulsor")
+UnanchorBtn.MouseButton1Click:Connect(function()
+    termPrint("> UNANCHORING MAP...",T.H_RED)
+    local count=0
+    task.spawn(function()
+        pcall(function()
+            for _,v in ipairs(workspace:GetDescendants()) do
+                if v:IsA("BasePart") and v.Anchored and v.Name~="HumanoidRootPart" then
+                    pcall(function() v.Anchored=false; count=count+1 end)
+                    if count%200==0 then task.wait() end
+                end
+            end
+        end)
+        termPrint("> Unanchored "..count.." parts — map will collapse",T.H_RED)
+    end)
+end)
+
+-- 12. Re-anchor — restore after chaos
+local ReanchorBtn=hBtn("🔒  Re-Anchor Map",T.H_DIM,"Anchors everything back")
+ReanchorBtn.MouseButton1Click:Connect(function()
+    local count=0
+    task.spawn(function()
+        pcall(function() for _,v in ipairs(workspace:GetDescendants()) do if v:IsA("BasePart") and v.Name~="HumanoidRootPart" then pcall(function() v.Anchored=true; count=count+1 end) end end end)
+        termPrint("> Re-anchored "..count.." parts",T.SUCCESS)
+    end)
+end)
+
+-- 13. Part Teleport Bomb — drops thousands of clones of a part on every player
+local PTBombBtn=hBtn("🧱  Part Teleport Bomb",T.H_RED,"Clones 50 random workspace parts and drops them on every player's head instantly")
+PTBombBtn.MouseButton1Click:Connect(function()
+    termPrint("> DROPPING PART BOMBS...",T.H_RED)
+    local parts={}
+    pcall(function() for _,v in ipairs(workspace:GetDescendants()) do if v:IsA("BasePart") and not v.Anchored then table.insert(parts,v) end end end)
+    if #parts==0 then termPrint("> No unanchored parts",T.H_DIM) return end
+    local count=0
+    for _,p in ipairs(Players:GetPlayers()) do
+        local root=p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+        if root then
+            for i=1,50 do task.spawn(function() pcall(function()
+                local src=parts[math.random(1,#parts)]
+                local clone=src:Clone()
+                clone.Anchored=false
+                clone.Size=Vector3.new(math.random(2,6),math.random(2,6),math.random(2,6))
+                clone.CFrame=CFrame.new(root.Position+Vector3.new(math.random(-5,5),math.random(5,20),math.random(-5,5)))
+                clone.Parent=workspace
+                game:GetService("Debris"):AddItem(clone,8)
+                count=count+1
+            end) end) end
+        end
+    end
+    task.wait(.5); termPrint("> Dropped parts on "..#Players:GetPlayers().." players",T.H_RED)
+end)
+
+-- 14. Weld All — welds every part to its neighbors, locking the map
+local WeldAllBtn=hBtn("⛓️  Weld All Parts Together",T.H_WARN,"Creates WeldConstraints between every nearby part pair — map becomes one solid unbreakable object")
+WeldAllBtn.MouseButton1Click:Connect(function()
+    termPrint("> WELDING MAP...",T.H_WARN)
+    local count=0
+    task.spawn(function()
+        pcall(function()
+            local ps={}
+            for _,v in ipairs(workspace:GetDescendants()) do if v:IsA("BasePart") and v.Name~="HumanoidRootPart" then table.insert(ps,v) end end
+            for i=1,math.min(#ps,500) do
+                local a=ps[i]; local b=ps[math.min(i+1,#ps)]
+                pcall(function()
+                    local w=Instance.new("WeldConstraint"); w.Part0=a; w.Part1=b; w.Parent=a; count=count+1
+                end)
+                if i%50==0 then task.wait() end
+            end
+        end)
+        termPrint("> Created "..count.." welds — map is now rigid",T.H_WARN)
+    end)
+end)
+
+-- 15. Spin All Players — BodyAngularVelocity on every player root
+local SpinAllBtn=hBtn("🌀  Spin All Players",T.H_RED,"Applies BodyAngularVelocity to every player's root — everyone spins uncontrollably")
+SpinAllBtn.MouseButton1Click:Connect(function()
+    local count=0
+    for _,p in ipairs(Players:GetPlayers()) do
+        local root=p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+        if root then pcall(function()
+            for _,v in ipairs(root:GetChildren()) do if v:IsA("BodyAngularVelocity") then v:Destroy() end end
+            local ba=Instance.new("BodyAngularVelocity")
+            ba.AngularVelocity=Vector3.new(0,math.random(50,200),0)
+            ba.MaxTorque=Vector3.new(math.huge,math.huge,math.huge); ba.Parent=root; count=count+1
+        end) end
+    end
+    termPrint("> Spinning "..count.." players",T.H_RED)
+end)
+
+local ClearTermBtn=hBtn("🗑  Clear Terminal",T.H_DIM,"")
+ClearTermBtn.MouseButton1Click:Connect(termClear)
+
+-- ══ OPEN/CLOSE LOGIC ══════════════════════════════
+local function updateLayout()
+    if N.windowOpen and N.sidebarOpen then
+        local vp=workspace.CurrentCamera.ViewportSize; local total=math.min(720,vp.X-40)
+        local aiW=math.floor(total*.5); local hackW=total-aiW-6; local startX=vp.X-20-total
+        N.Win.Size=UDim2.new(0,aiW,0,560); N.Win.Position=UDim2.new(0,startX,1,-644)
+        N.SideWin.Size=UDim2.new(0,hackW,0,560); N.SideWin.Position=UDim2.new(0,startX+aiW+6,1,-644)
+    elseif N.windowOpen then N.Win.Size=UDim2.new(0,370,0,560); N.Win.Position=UDim2.new(1,-388,1,-644)
+    elseif N.sidebarOpen then N.SideWin.Size=UDim2.new(0,340,0,560); N.SideWin.Position=UDim2.new(1,-358,1,-644) end
+end
+
+local function openWin()
+    N.windowOpen=true; N.FAB.Visible=false; N.Win.Visible=true; N.Win.Size=UDim2.new(0,0,0,560)
+    updateLayout(); tw(N.Win,{Size=N.Win.Size},.28,Enum.EasingStyle.Back,Enum.EasingDirection.Out)
+end
+local function closeWin()
+    N.windowOpen=false; tw(N.Win,{Size=UDim2.new(0,0,0,560)},.2)
+    task.delay(.22,function() N.Win.Visible=false; if not N.sidebarOpen then N.FAB.Visible=true end end)
+end
+local function openSidebar()
+    N.sidebarOpen=true; N.FAB.Visible=false; N.SideWin.Visible=true; N.SideWin.Size=UDim2.new(0,0,0,560)
+    updateLayout(); tw(N.SideWin,{Size=N.SideWin.Size},.3,Enum.EasingStyle.Back,Enum.EasingDirection.Out)
+    if N.windowOpen then updateLayout(); tw(N.Win,{Size=N.Win.Size,Position=N.Win.Position},.3) end
+end
+local function closeSidebar()
+    N.sidebarOpen=false; tw(N.SideWin,{Size=UDim2.new(0,0,0,560)},.2)
+    task.delay(.22,function() N.SideWin.Visible=false; if not N.windowOpen then N.FAB.Visible=true end
+        if N.windowOpen then N.Win.Size=UDim2.new(0,370,0,560); N.Win.Position=UDim2.new(1,-388,1,-644) end end)
+end
+
+N.FABBtn.MouseButton1Click:Connect(openWin)
+N.MinBtn.MouseButton1Click:Connect(closeWin)
+N.CloseBtn.MouseButton1Click:Connect(closeWin)
+N.CloseSideBtn.MouseButton1Click:Connect(closeSidebar)
+N.SidebarBtn.MouseButton1Click:Connect(function() if N.sidebarOpen then closeSidebar() else openSidebar() end end)
+N.AITabBtn.MouseButton1Click:Connect(function() if not N.windowOpen then openWin() end end)
+N.HackTabBtn.MouseButton1Click:Connect(function()
+    if N.hackUnlocked then N.LockPanel.Visible=false; N.HackScroll.Visible=true
+    else N.LockPanel.Visible=true; N.HackScroll.Visible=false end
+end)
+
+local function tryUnlock()
+    local entered=N.CodeInput.Text:upper():match("^%s*(.-)%s*$")
+    if entered==N.SECRET then
+        N.hackUnlocked=true; N.CodeErrLabel.Text=""; N.CodeInput.Text=""
+        N.runHackSequence(function()
+            N.LockPanel.Visible=false; N.HackScroll.Visible=true
+            tw(N.HackTabBtn,{TextColor3=T.H_FG},.3); N.HackTabBtn.Text="💀 HACK"
+        end)
+    else
+        N.CodeErrLabel.Text="[ ACCESS DENIED ]"
+        task.delay(2,function() N.CodeErrLabel.Text="" end)
+    end
+end
+N.CodeSubmit.MouseButton1Click:Connect(tryUnlock)
+N.CodeInput.FocusLost:Connect(function(enter) if enter then tryUnlock() end end)
+
+-- ══ CODE PREVIEW ══════════════════════════════════
+local function showCode(code)
+    N.currentCode=code; N.CodeText.Text=code; task.wait()
+    local codeH=math.clamp(N.CodeText.AbsoluteSize.Y+44,72,200); local total=120+codeH+8
+    N.ChatScroll.Size=UDim2.new(1,0,1,-(48+total))
+    N.CodeBox.Size=UDim2.new(1,-20,0,codeH); N.CodeBox.Position=UDim2.new(0,10,1,-total)
+    N.CodeBox.Visible=true; N.RunFrame.Visible=true
+end
+local function hideCode()
+    N.currentCode=nil; N.CodeBox.Visible=false; N.RunFrame.Visible=false
+    N.ChatScroll.Size=UDim2.new(1,0,1,-168)
+end
+
+-- ══ CHAT BUBBLES ══════════════════════════════════
+local function scrollBottom() task.wait(); N.ChatScroll.CanvasPosition=Vector2.new(0,math.huge) end
+local thinkBubble,thinkConn
+
+local function bubble(role,text)
+    local isUser=role=="user"; local isSys=role=="system"
+    local wrap=new("Frame",N.ChatScroll,{Size=UDim2.new(1,0,0,0),BackgroundTransparency=1,AutomaticSize=Enum.AutomaticSize.Y,ZIndex=6,LayoutOrder=os.clock()*1000})
+    lst(wrap,Enum.FillDirection.Vertical,Enum.HorizontalAlignment.Left,3)
+    new("TextLabel",wrap,{Text=isUser and "you" or (isSys and "system" or "nova ✦"),TextColor3=isUser and T.ACCENT or (isSys and T.WARNING or T.TEXT3),Font=Enum.Font.GothamBold,TextSize=9,BackgroundTransparency=1,Size=UDim2.new(1,0,0,12),TextXAlignment=isUser and Enum.TextXAlignment.Right or Enum.TextXAlignment.Left,ZIndex=6,LayoutOrder=1})
+    local mf=new("Frame",wrap,{Size=UDim2.new(isUser and 0 or 1,0,0,0),AnchorPoint=isUser and Vector2.new(1,0) or Vector2.new(0,0),Position=isUser and UDim2.new(1,0,0,0) or UDim2.new(0,0,0,0),BackgroundColor3=isUser and T.ACCENT:lerp(T.ACCENT2,.4) or T.ELEVATED,BackgroundTransparency=isSys and .35 or 0,BorderSizePixel=0,AutomaticSize=Enum.AutomaticSize.XY,ZIndex=7,LayoutOrder=2})
+    rnd(mf,isUser and 10 or 8); if not isUser then str(mf,T.BORDER,1) end; pad(mf,8,12,8,12)
+    local ml=new("TextLabel",mf,{Text=text,TextColor3=isUser and T.WHITE or (isSys and T.WARNING or T.TEXT1),Font=Enum.Font.Gotham,TextSize=12,BackgroundTransparency=1,Size=UDim2.new(isUser and 0 or 1,0,0,0),TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=true,AutomaticSize=Enum.AutomaticSize.XY,ZIndex=8})
+    mf.BackgroundTransparency=1; ml.TextTransparency=1
+    task.spawn(function() task.wait(.03); tw(mf,{BackgroundTransparency=isSys and .35 or 0},.22); tw(ml,{TextTransparency=0},.22) end)
+    scrollBottom(); return wrap
+end
+
+local function startThinking()
+    local wrap=new("Frame",N.ChatScroll,{Size=UDim2.new(1,0,0,40),BackgroundTransparency=1,ZIndex=6,LayoutOrder=math.huge})
+    local f=new("Frame",wrap,{Size=UDim2.new(0,94,0,30),BackgroundColor3=T.ELEVATED,BorderSizePixel=0,ZIndex=7}) rnd(f,8); str(f,T.BORDER,1)
+    local lbl=new("TextLabel",f,{Text="thinking",TextColor3=T.TEXT3,Font=Enum.Font.GothamBold,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=8})
+    local n=0; thinkConn=RunService.Heartbeat:Connect(function() n=(n+1)%4; lbl.Text="thinking"..string.rep(".",n) end); thinkBubble=wrap; scrollBottom()
+end
+local function stopThinking() if thinkConn then thinkConn:Disconnect();thinkConn=nil end; if thinkBubble then thinkBubble:Destroy();thinkBubble=nil end end
+
+-- ══ SEND MESSAGE ══════════════════════════════════
+local function sendMessage(prompt)
+    prompt=prompt:match("^%s*(.-)%s*$"); if prompt=="" or N.isThinking then return end
+    local now=tick(); if now-N.lastReq<N.COOLDOWN then bubble("system",("⏳ Wait %ds"):format(math.ceil(N.COOLDOWN-(now-N.lastReq)))); return end
+    N.lastReq=now
+    if N.API_KEY=="YOUR_GROQ_KEY_HERE" then bubble("system","⚠ Add your Groq API key at the top of Part 1.\nGet one free at console.groq.com"); return end
+    N.isThinking=true; hideCode(); table.insert(N.chatHistory,{role="user",text=prompt}); bubble("user",prompt)
+    tw(N.StatLabel,{TextColor3=T.WARNING},.15); tw(N.StatBadge,{BackgroundColor3=T.WARN_D},.15); N.StatLabel.Text="● thinking"; startThinking()
+    task.spawn(function()
+        local ok,result=pcall(callGroq,prompt,N.chatHistory)
+        stopThinking(); tw(N.StatLabel,{TextColor3=T.SUCCESS},.15); tw(N.StatBadge,{BackgroundColor3=T.SUCC_D},.15); N.StatLabel.Text="● ready"; N.isThinking=false
+        if not ok then bubble("system","⚠ API error — "..tostring(result):sub(1,160)); return end
+        local msg=result.message or "Here you go!"; local code=result.code or ""
+        table.insert(N.chatHistory,{role="ai",text=msg,code=code}); bubble("ai",msg)
+        if code~="" then showCode(code) end
+    end)
+end
+
+-- ══ RUN CODE ══════════════════════════════════════
+local function runCode()
+    if not N.currentCode then return end
+    tw(N.RunFrame,{BackgroundColor3=T.SUCCESS:lerp(T.BLACK,.25)},.06)
+    task.delay(.15,function() tw(N.RunFrame,{BackgroundColor3=T.SUCC_D},.2) end)
+    local ok,msg=safeExec(N.currentCode)
+    if ok then bubble("system","✓ "..msg)
+    else tw(N.RunFrame,{BackgroundColor3=T.ERR_D},.1); task.delay(.7,function() tw(N.RunFrame,{BackgroundColor3=T.SUCC_D},.25) end); bubble("system","✗ "..msg) end
+end
+
+-- ══ CONNECTIONS ═══════════════════════════════════
+N.SendBtn.MouseButton1Click:Connect(function() local t=N.InputBox.Text; N.InputBox.Text=""; sendMessage(t) end)
+N.InputBox.FocusLost:Connect(function(enter) if enter then local t=N.InputBox.Text; N.InputBox.Text=""; sendMessage(t) end end)
+N.RunBtn.MouseButton1Click:Connect(runCode)
+N.ClearBtn.MouseButton1Click:Connect(function()
+    for _,c in ipairs(N.ChatScroll:GetChildren()) do if not c:IsA("UIListLayout") and not c:IsA("UIPadding") then c:Destroy() end end
+    N.chatHistory={}; hideCode(); bubble("system","Cleared — what do you want to build?")
+end)
+N.CopyBtn.MouseButton1Click:Connect(function()
+    if not N.currentCode then return end
+    if typeof(setclipboard)=="function" then pcall(setclipboard,N.currentCode); bubble("system","✓ Copied!") else bubble("system","ℹ Copy from panel above.") end
+end)
+UserInputService.InputBegan:Connect(function(inp,gp)
+    if gp then return end
+    if inp.KeyCode==Enum.KeyCode.BackQuote then if N.windowOpen then closeWin() else openWin() end end
+end)
+
+-- ══ WELCOME ═══════════════════════════════════════
+task.delay(.4,function()
+    bubble("ai","Hey! I'm Nova ✦\n\nDescribe anything — fly scripts, GUIs, combat, teleporters, anything. I'll write the full working code.\n\nPress ☰ for the Nexus sidebar tools. Code is HACK.")
+end)
+
+print("[Nova AI v2] ✦ READY — ` to toggle | ☰ for Nexus | code: HACK")
