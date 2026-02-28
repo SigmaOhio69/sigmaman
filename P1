@@ -1,0 +1,261 @@
+--[[
+  NOVA AI v2 — PART 1 of 2
+  Inject this first, then inject Part 2.
+  Get a free Groq key at console.groq.com
+--]]
+
+-- ══ CONFIG ══════════════════════════════════════
+local API_KEY    = "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"
+local MODEL      = "llama-3.3-70b-versatile"
+local MAX_TOKENS = 2048
+local COOLDOWN   = 2
+local _s = string.char
+local SECRET = _s(72).._s(65).._s(67).._s(75)
+
+local SYSTEM_PROMPT = [[
+You are Nova, an expert Roblox Lua scripting assistant. You write complete, fully working scripts.
+
+CAPABILITIES:
+- Full access to ALL Roblox APIs: Players, RunService, TweenService, UserInputService,
+  BodyVelocity, BodyGyro, BodyPosition, VectorForce, workspace, game, Instance, etc.
+
+STRICT CODE RULES:
+- NO line limit. Write as much code as needed.
+- For FLY scripts: ALWAYS use BodyVelocity + BodyGyro on HumanoidRootPart.
+  WASD + Space/Shift for up/down. Toggle with F key. Camera-relative movement.
+  Never use WalkSpeed alone for flying. Include proper cleanup.
+- For GUIs: use ScreenGui parented to PlayerGui with proper hierarchy.
+- For teleport: set HumanoidRootPart.CFrame directly.
+- Always use task.spawn() for async loops. Always disconnect events on toggle off.
+- Write clean, commented, production-quality code. Handle errors with pcall.
+
+RESPONSE FORMAT — ONLY valid JSON, no markdown, no extra text:
+{"message":"Brief description.","code":"-- full lua code with \\n for newlines"}
+If non-code question: JSON with empty code string.
+ALWAYS write complete implementations.
+]]
+
+-- ══ SERVICES ════════════════════════════════════
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local TweenService     = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local HttpService      = game:GetService("HttpService")
+local Player    = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+
+-- ══ THEME ════════════════════════════════════════
+local T = {
+    BG=Color3.fromRGB(9,10,17), PANEL=Color3.fromRGB(14,16,27),
+    ELEVATED=Color3.fromRGB(19,22,37), HOVER=Color3.fromRGB(26,30,50),
+    BORDER=Color3.fromRGB(36,43,70), BORDER2=Color3.fromRGB(55,65,105),
+    ACCENT=Color3.fromRGB(99,179,255), ACCENT_D=Color3.fromRGB(30,60,110),
+    ACCENT2=Color3.fromRGB(138,99,255),
+    SUCCESS=Color3.fromRGB(72,222,150), SUCC_D=Color3.fromRGB(20,70,45),
+    WARNING=Color3.fromRGB(255,196,72), WARN_D=Color3.fromRGB(65,50,10),
+    ERROR=Color3.fromRGB(255,90,110), ERR_D=Color3.fromRGB(80,20,30),
+    TEXT1=Color3.fromRGB(228,234,255), TEXT2=Color3.fromRGB(138,150,195),
+    TEXT3=Color3.fromRGB(68,80,128),
+    CODE_FG=Color3.fromRGB(150,220,180), CODE_BG=Color3.fromRGB(7,10,20),
+    WHITE=Color3.fromRGB(255,255,255), BLACK=Color3.fromRGB(0,0,0),
+    H_BG=Color3.fromRGB(0,0,0), H_FG=Color3.fromRGB(0,255,70),
+    H_DIM=Color3.fromRGB(0,100,30), H_DARK=Color3.fromRGB(0,12,4),
+    H_MED=Color3.fromRGB(0,30,10), H_WARN=Color3.fromRGB(255,140,20),
+    H_RED=Color3.fromRGB(255,40,40),
+}
+
+-- ══ HELPERS ══════════════════════════════════════
+local function tw(o,p,t,s,d) TweenService:Create(o,TweenInfo.new(t or .18,s or Enum.EasingStyle.Quart,d or Enum.EasingDirection.Out),p):Play() end
+local function new(c,par,pr) local o=Instance.new(c) for k,v in pairs(pr or {}) do o[k]=v end if par then o.Parent=par end return o end
+local function rnd(p,r) new("UICorner",p,{CornerRadius=UDim.new(0,r or 8)}) end
+local function str(p,c,t) new("UIStroke",p,{Color=c or T.BORDER,Thickness=t or 1,ApplyStrokeMode=Enum.ApplyStrokeMode.Border}) end
+local function pad(p,t,r,b,l) new("UIPadding",p,{PaddingTop=UDim.new(0,t or 8),PaddingRight=UDim.new(0,r or 8),PaddingBottom=UDim.new(0,b or 8),PaddingLeft=UDim.new(0,l or 8)}) end
+local function lst(p,dir,ha,sp) new("UIListLayout",p,{FillDirection=dir or Enum.FillDirection.Vertical,HorizontalAlignment=ha or Enum.HorizontalAlignment.Left,SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,sp or 0)}) end
+local function hov(b,f,nc,hc) hc=hc or nc:lerp(T.WHITE,.1) b.MouseEnter:Connect(function() tw(f,{BackgroundColor3=hc},.1) end) b.MouseLeave:Connect(function() tw(f,{BackgroundColor3=nc},.1) end) end
+
+-- ══ SCREEN ROOT ══════════════════════════════════
+do local e=PlayerGui:FindFirstChild("NovaAI") if e then e:Destroy() end end
+local Screen = new("ScreenGui",PlayerGui,{Name="NovaAI",ResetOnSpawn=false,ZIndexBehavior=Enum.ZIndexBehavior.Sibling,DisplayOrder=100,IgnoreGuiInset=true})
+
+-- ══ STATE (shared via _G.NOVA) ════════════════════
+_G.NOVA = {
+    API_KEY=API_KEY, MODEL=MODEL, MAX_TOKENS=MAX_TOKENS,
+    COOLDOWN=COOLDOWN, SECRET=SECRET, SYSTEM_PROMPT=SYSTEM_PROMPT,
+    T=T, tw=tw, new=new, rnd=rnd, str=str, pad=pad, lst=lst, hov=hov,
+    Screen=Screen, Players=Players, RunService=RunService,
+    TweenService=TweenService, UserInputService=UserInputService,
+    HttpService=HttpService, Player=Player, PlayerGui=PlayerGui,
+    chatHistory={}, currentCode=nil, isThinking=false,
+    windowOpen=false, sidebarOpen=false, lastReq=0,
+    hackUnlocked=false, spamActive=false, spamTarget=nil,
+    spamCooldown=0.1, blockedRemotes={}, massSpamActive=false,
+    massSpamCooldown=0.2, scannedRemotes={}, exploitPopups={},
+    frozenParts={}, isInvis=false, noclipActive=false, noclipConn=nil,
+}
+local N = _G.NOVA
+
+-- ══ OVERLAY ══════════════════════════════════════
+local Overlay = new("Frame",Screen,{Size=UDim2.new(1,0,1,0),BackgroundColor3=T.BLACK,BackgroundTransparency=0,BorderSizePixel=0,ZIndex=999,Visible=false})
+local rainChars = {}
+for i=1,20 do
+    local col = new("TextLabel",Overlay,{Text="",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=12,BackgroundTransparency=1,Size=UDim2.new(0,20,1,0),Position=UDim2.new(0,(i-1)*36,0,0),TextXAlignment=Enum.TextXAlignment.Center,TextYAlignment=Enum.TextYAlignment.Top,ZIndex=1000,TextWrapped=false})
+    table.insert(rainChars,col)
+end
+local SkullFrame = new("Frame",Overlay,{Size=UDim2.new(0,560,0,440),Position=UDim2.new(.5,-280,.5,-240),BackgroundColor3=Color3.fromRGB(0,0,0),BackgroundTransparency=.2,BorderSizePixel=0,ZIndex=1001})
+rnd(SkullFrame,4); str(SkullFrame,T.H_FG,1); pad(SkullFrame,16,16,16,16)
+local SkullText = new("TextLabel",SkullFrame,{Text="░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n░░░░░░░░░░░░░░░░░▓████████████████████▒░░░░░░░\n░░░░░░░░░░░░░░▓█████▓▒░░░░░░░░░░░▒██████▒░░░░░\n░░░░░░░░░░░░████▒░░░░░░░░░░░░░░░░░░░▓███▒░░░░░\n░░░░░░░░░░░███░░░░░░░░░░░░░░░░░░░░░░░░███░░░░░\n░░░░░░░░░▒██░░░░░░░░░░░░░░░░░░░░░░░░░░░▒██░░░░\n░░░░░░░░░██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░██░░░\n░░░░░░░░░██▓░░░░░░░░░░░░░░░░░░░░░░░░░░▒░░██░░░\n░░░░░░░░░██░░██░░░░░░░░░░░░░░░░░░░░░░░██░░██░░\n░░░░░░░░░██░░██░░░░░░░░░░░░░░░░░░░░░░░██░░██░░\n░░░░░░░░░██▒░██▓░░░░░░░░░░░░░░░░░░░░░██▓░▒██░░\n░░░░░░░░░░██░░██░░░░░░░░░░░░░░░░░░░░░██░░██░░░\n░░░░░░░░░░██▒░██░░░▒▒▓███▒░░░░░▒███▓▒▒░░░██░░░\n░░░░░░░░░░░██░██░████████▒░░░░░▓████████░██░░░\n░░░░░░░░░░░░████░██████████░░░████████████░░░░\n░░░░░░░░░░░░░███░▒████████░░░░░████████▒░██░░░\n░░░▒████░░░░░▓█▒░░███████░░░░░░░███████░░▒█▓░░\n░░░██░▒██▒░░░██░░░░█████▓░░█░█░░░██████░░░██░░\n░░░██░░░██▓░░██░░░░░░▒▓░░░▒██░██░░░░▓▒░░░▒██░░\n░▓██▒░░░░████░██░░░░░░░░░░███░███░░░░░░░░██░░░\n██▓░░░░░░░▒████████▓░░░░░████░███▓░░░░▓████░░░\n░███████▒░░░░░░███████░░░██░░░██░░░░██████░░░░\n░░░░░░▓█████░░░░██▓░██░░░░░░░░░░░░██░▒██░░░░░░\n░░░░░░░░▒█████▒▒███░███▓▓▒▒▒▒▒▒▓▓███░███░░░░░░\n░░░░░░░░░░░▒████▒▓█▒▒█░█▒█░█░█▓█▒█▓░████░░░░░░\n░░░░░░░░░░░░░░██░░██▓█▓█▓█▒█▒█▓█▓████░▓█░░░░░░\n░░░░░░░░░░░░▓████▓░▓█▓█░█▒█░█░█▒█▒███░█████░░░\n░░░░░░░░░▓█████░░██░░░▒█████▓█▓█████▒░██░░████\n░░░▒████████▓░░░░███░░░░░░░░░░░░░░░░░██░░░░░░░\n░░░░██░░░░░░░░▒██████▓░░░░░░░░░░███████▒░░░░░░\n░░░░▓██░░░░▓████▓░░░█████▒░░▒▓█████░░▓████░░░░\n░░░░░░███░████▒░░░░░░░░▓█████████▒░░░░░░████░░\n░░░░░░░██░░██▒░░░░░░░░░░░░░░░░░░░░░░░░░░░▓██░░\n░░░░░░░██▒▓██░░░░░░░░░░░░░░░░░░░░░░░░░░░░▒████\n░░░░░░░░████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░███\n░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n          [ NEXUS BREACH PROTOCOL v2 ]",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=9,BackgroundTransparency=1,Size=UDim2.new(1,0,0,358),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=1002,TextWrapped=false})
+local ConnectLabel = new("TextLabel",SkullFrame,{Text="CONNECTING...",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=14,BackgroundTransparency=1,Size=UDim2.new(1,0,0,20),Position=UDim2.new(0,0,0,366),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=1002})
+local ProgressBar  = new("Frame",SkullFrame,{Size=UDim2.new(0,0,0,4),Position=UDim2.new(0,0,0,394),BackgroundColor3=T.H_FG,BorderSizePixel=0,ZIndex=1002})
+local StatusLine   = new("TextLabel",SkullFrame,{Text="",TextColor3=T.H_DIM,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,0,0,14),Position=UDim2.new(0,0,0,408),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=1002})
+
+local hackSteps = {"Bypassing anti-cheat layer...","Injecting memory hooks...","Decrypting remote table...","Mapping server topology...","Patching exploit vectors...","ACCESS GRANTED"}
+
+N.runHackSequence = function(onDone)
+    Overlay.Visible=true
+    SkullFrame.BackgroundTransparency=1; SkullText.TextTransparency=1; ConnectLabel.TextTransparency=1
+    ProgressBar.Size=UDim2.new(0,0,0,4)
+    local rainActive=true
+    task.spawn(function()
+        local g="アイウエオカキクケコサシスセソタチツテトナニヌネノ0123456789ABCDEF<>?!@#"
+        while rainActive do
+            for _,col in ipairs(rainChars) do
+                local ls={} for i=1,30 do local idx=math.random(1,#g) table.insert(ls,g:sub(idx,idx)) end
+                col.Text=table.concat(ls,"\n"); col.TextTransparency=1-(math.random(30,100)/100)
+            end
+            task.wait(.05)
+        end
+        for _,col in ipairs(rainChars) do col.Text="" end
+    end)
+    task.spawn(function()
+        task.wait(.2)
+        tw(SkullFrame,{BackgroundTransparency=.2},.4); tw(SkullText,{TextTransparency=0},.4)
+        task.wait(.4); tw(ConnectLabel,{TextTransparency=0},.3); task.wait(.3)
+        for i,step in ipairs(hackSteps) do
+            StatusLine.Text="> "..step
+            tw(ProgressBar,{Size=UDim2.new(i/#hackSteps,0,0,4)},.35)
+            if i==#hackSteps then for _=1,5 do SkullText.TextTransparency=.6; task.wait(.06); SkullText.TextTransparency=0; task.wait(.06) end
+            else task.wait(.4) end
+        end
+        task.wait(.4); rainActive=false
+        tw(Overlay,{BackgroundTransparency=1},.6)
+        task.wait(.65); Overlay.Visible=false; Overlay.BackgroundTransparency=0
+        if onDone then onDone() end
+    end)
+end
+
+-- ══ FAB ══════════════════════════════════════════
+local FAB = new("Frame",Screen,{Size=UDim2.new(0,54,0,54),Position=UDim2.new(1,-70,1,-84),BackgroundColor3=T.ACCENT,BorderSizePixel=0,ZIndex=20})
+rnd(FAB,17); str(FAB,T.BORDER2,1)
+local fabGlow = new("Frame",FAB,{Size=UDim2.new(1,16,1,16),Position=UDim2.new(0,-8,0,-8),BackgroundColor3=T.ACCENT,BackgroundTransparency=.72,BorderSizePixel=0,ZIndex=19})
+rnd(fabGlow,23)
+task.spawn(function() while true do tw(fabGlow,{BackgroundTransparency=.5},1.1,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut) task.wait(1.1) tw(fabGlow,{BackgroundTransparency=.86},1.1,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut) task.wait(1.1) end end)
+new("TextLabel",FAB,{Text="✦",TextColor3=T.WHITE,Font=Enum.Font.GothamBold,TextSize=22,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=21})
+N.FAB = FAB
+N.FABBtn = new("TextButton",FAB,{Text="",BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=22})
+
+-- ══ MAIN WINDOW ══════════════════════════════════
+N.Win = new("Frame",Screen,{Size=UDim2.new(0,370,0,560),Position=UDim2.new(1,-388,1,-644),BackgroundColor3=T.BG,BorderSizePixel=0,ZIndex=5,Visible=false,ClipsDescendants=true})
+rnd(N.Win,14); str(N.Win,T.BORDER,1)
+
+local TBar = new("Frame",N.Win,{Size=UDim2.new(1,0,0,48),BackgroundColor3=T.PANEL,BorderSizePixel=0,ZIndex=10})
+rnd(TBar,14)
+new("Frame",TBar,{Size=UDim2.new(1,0,0,14),Position=UDim2.new(0,0,1,-14),BackgroundColor3=T.PANEL,BorderSizePixel=0,ZIndex=10})
+new("Frame",TBar,{Size=UDim2.new(1,0,0,1),Position=UDim2.new(0,0,1,-1),BackgroundColor3=T.BORDER,BorderSizePixel=0,ZIndex=11})
+
+local logoDot = new("Frame",TBar,{Size=UDim2.new(0,8,0,8),Position=UDim2.new(0,16,.5,-4),BackgroundColor3=T.ACCENT,BorderSizePixel=0,ZIndex=12})
+rnd(logoDot,4)
+task.spawn(function() while true do tw(logoDot,{BackgroundTransparency=.1},.85,Enum.EasingStyle.Sine) task.wait(.85) tw(logoDot,{BackgroundTransparency=.7},.85,Enum.EasingStyle.Sine) task.wait(.85) end end)
+new("TextLabel",TBar,{Text="NOVA  AI",TextColor3=T.TEXT1,Font=Enum.Font.GothamBold,TextSize=13,BackgroundTransparency=1,Size=UDim2.new(0,100,1,0),Position=UDim2.new(0,30,0,0),TextXAlignment=Enum.TextXAlignment.Left,ZIndex=12})
+
+local StatBadge = new("Frame",TBar,{Size=UDim2.new(0,66,0,22),Position=UDim2.new(1,-192,.5,-11),BackgroundColor3=T.SUCC_D,BorderSizePixel=0,ZIndex=12})
+rnd(StatBadge,6)
+N.StatLabel = new("TextLabel",StatBadge,{Text="● ready",TextColor3=T.SUCCESS,Font=Enum.Font.GothamBold,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=13})
+N.StatBadge = StatBadge
+
+local ModelBadge = new("Frame",TBar,{Size=UDim2.new(0,82,0,22),Position=UDim2.new(1,-118,.5,-11),BackgroundColor3=T.ACCENT_D,BorderSizePixel=0,ZIndex=12})
+rnd(ModelBadge,6)
+new("TextLabel",ModelBadge,{Text="llama-3.3-70b",TextColor3=T.ACCENT,Font=Enum.Font.GothamBold,TextSize=9,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=13})
+
+local function titleBtn(icon,xOff)
+    local f=new("Frame",TBar,{Size=UDim2.new(0,28,0,28),Position=UDim2.new(1,xOff,.5,-14),BackgroundColor3=T.ELEVATED,BorderSizePixel=0,ZIndex=12}) rnd(f,8)
+    local b=new("TextButton",f,{Text=icon,TextColor3=T.TEXT2,Font=Enum.Font.GothamBold,TextSize=15,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=13}) hov(b,f,T.ELEVATED,T.HOVER) return b
+end
+N.SidebarBtn = titleBtn("☰",-80)
+N.MinBtn     = titleBtn("−",-46)
+N.CloseBtn   = titleBtn("×",-12)
+
+-- Drag
+local dragActive,dragStart,winStart
+TBar.InputBegan:Connect(function(inp) if inp.UserInputType==Enum.UserInputType.MouseButton1 then dragActive=true;dragStart=inp.Position;winStart=N.Win.Position end end)
+UserInputService.InputChanged:Connect(function(inp) if dragActive and inp.UserInputType==Enum.UserInputType.MouseMovement then local d=inp.Position-dragStart; N.Win.Position=UDim2.new(winStart.X.Scale,winStart.X.Offset+d.X,winStart.Y.Scale,winStart.Y.Offset+d.Y) end end)
+UserInputService.InputEnded:Connect(function(inp) if inp.UserInputType==Enum.UserInputType.MouseButton1 then dragActive=false end end)
+
+N.ChatScroll = new("ScrollingFrame",N.Win,{Size=UDim2.new(1,0,1,-168),Position=UDim2.new(0,0,0,48),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=3,ScrollBarImageColor3=T.BORDER2,CanvasSize=UDim2.new(0,0,0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y,ZIndex=6})
+lst(N.ChatScroll); pad(N.ChatScroll,10,10,10,10)
+
+N.CodeBox = new("Frame",N.Win,{Size=UDim2.new(1,-20,0,0),Position=UDim2.new(0,10,1,-168),BackgroundColor3=T.CODE_BG,BorderSizePixel=0,ZIndex=7,Visible=false,ClipsDescendants=true})
+rnd(N.CodeBox,9); str(N.CodeBox,T.BORDER,1)
+local CodeHead=new("Frame",N.CodeBox,{Size=UDim2.new(1,0,0,28),BackgroundColor3=T.ELEVATED,BorderSizePixel=0,ZIndex=8}) rnd(CodeHead,9)
+new("Frame",CodeHead,{Size=UDim2.new(1,0,0,9),Position=UDim2.new(0,0,1,-9),BackgroundColor3=T.ELEVATED,BorderSizePixel=0,ZIndex=8})
+new("TextLabel",CodeHead,{Text="⬡  Generated Code",TextColor3=T.ACCENT,Font=Enum.Font.GothamBold,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,-50,1,0),Position=UDim2.new(0,10,0,0),TextXAlignment=Enum.TextXAlignment.Left,ZIndex=9})
+N.CopyBtn=new("TextButton",CodeHead,{Text="copy",TextColor3=T.TEXT3,Font=Enum.Font.GothamBold,TextSize=9,BackgroundTransparency=1,Size=UDim2.new(0,40,1,0),Position=UDim2.new(1,-44,0,0),AutoButtonColor=false,ZIndex=9})
+N.CopyBtn.MouseEnter:Connect(function() tw(N.CopyBtn,{TextColor3=T.TEXT1},.1) end)
+N.CopyBtn.MouseLeave:Connect(function() tw(N.CopyBtn,{TextColor3=T.TEXT3},.1) end)
+N.CodeText=new("TextLabel",N.CodeBox,{Text="",TextColor3=T.CODE_FG,Font=Enum.Font.Code,TextSize=11,BackgroundTransparency=1,Size=UDim2.new(1,-16,0,0),Position=UDim2.new(0,8,0,32),TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Top,TextWrapped=true,AutomaticSize=Enum.AutomaticSize.Y,ZIndex=8,RichText=false})
+
+local BotBar=new("Frame",N.Win,{Size=UDim2.new(1,0,0,120),Position=UDim2.new(0,0,1,-120),BackgroundColor3=T.PANEL,BorderSizePixel=0,ZIndex=7}) rnd(BotBar,14)
+new("Frame",BotBar,{Size=UDim2.new(1,0,0,14),BackgroundColor3=T.PANEL,BorderSizePixel=0,ZIndex=7})
+new("Frame",BotBar,{Size=UDim2.new(1,0,0,1),BackgroundColor3=T.BORDER,BorderSizePixel=0,ZIndex=8})
+local ActRow=new("Frame",BotBar,{Size=UDim2.new(1,-20,0,30),Position=UDim2.new(0,10,0,12),BackgroundTransparency=1,ZIndex=8}) lst(ActRow,Enum.FillDirection.Horizontal,Enum.HorizontalAlignment.Left,6)
+
+local function actBtn(text,bg,fg,order)
+    local f=new("Frame",ActRow,{Size=UDim2.new(0,0,1,0),BackgroundColor3=bg,BorderSizePixel=0,ZIndex=9,LayoutOrder=order,AutomaticSize=Enum.AutomaticSize.X}) rnd(f,7); pad(f,0,14,0,14)
+    local b=new("TextButton",f,{Text=text,TextColor3=fg,Font=Enum.Font.GothamBold,TextSize=11,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=10,AutomaticSize=Enum.AutomaticSize.X}) hov(b,f,bg) return b,f
+end
+N.RunBtn,N.RunFrame = actBtn("▶  Run Code",T.SUCC_D,T.SUCCESS,1)
+N.ClearBtn          = actBtn("✕  Clear",T.ELEVATED,T.TEXT2,2)
+N.RunFrame.Visible  = false
+
+local InpRow=new("Frame",BotBar,{Size=UDim2.new(1,-20,0,38),Position=UDim2.new(0,10,0,50),BackgroundColor3=T.ELEVATED,BorderSizePixel=0,ZIndex=8}) rnd(InpRow,10); str(InpRow,T.BORDER,1)
+N.InputBox=new("TextBox",InpRow,{Text="",PlaceholderText="Describe what you want to build...",PlaceholderColor3=T.TEXT3,TextColor3=T.TEXT1,Font=Enum.Font.Gotham,TextSize=12,BackgroundTransparency=1,BorderSizePixel=0,Size=UDim2.new(1,-48,1,0),Position=UDim2.new(0,12,0,0),TextXAlignment=Enum.TextXAlignment.Left,ClearTextOnFocus=false,MultiLine=false,ZIndex=9})
+local SendFrame=new("Frame",InpRow,{Size=UDim2.new(0,32,0,28),Position=UDim2.new(1,-38,.5,-14),BackgroundColor3=T.ACCENT,BorderSizePixel=0,ZIndex=9}) rnd(SendFrame,8)
+N.SendBtn=new("TextButton",SendFrame,{Text="↑",TextColor3=T.WHITE,Font=Enum.Font.GothamBold,TextSize=16,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=10}) hov(N.SendBtn,SendFrame,T.ACCENT)
+N.InputBox.Focused:Connect(function() str(InpRow,T.BORDER2,1); tw(InpRow,{BackgroundColor3=T.HOVER},.15) end)
+N.InputBox.FocusLost:Connect(function() str(InpRow,T.BORDER,1); tw(InpRow,{BackgroundColor3=T.ELEVATED},.15) end)
+
+-- ══ SIDEBAR ══════════════════════════════════════
+N.SideWin = new("Frame",Screen,{Size=UDim2.new(0,0,0,560),Position=UDim2.new(1,-388,1,-644),BackgroundColor3=T.H_BG,BorderSizePixel=0,ZIndex=4,Visible=false,ClipsDescendants=true})
+rnd(N.SideWin,14); str(N.SideWin,Color3.fromRGB(0,180,50),1)
+
+local SBar=new("Frame",N.SideWin,{Size=UDim2.new(1,0,0,42),BackgroundColor3=Color3.fromRGB(0,8,2),BorderSizePixel=0,ZIndex=10}) rnd(SBar,14)
+new("Frame",SBar,{Size=UDim2.new(1,0,0,14),Position=UDim2.new(0,0,1,-14),BackgroundColor3=Color3.fromRGB(0,8,2),BorderSizePixel=0,ZIndex=10})
+new("Frame",SBar,{Size=UDim2.new(1,0,0,1),Position=UDim2.new(0,0,1,-1),BackgroundColor3=T.H_FG,BorderSizePixel=0,ZIndex=11})
+new("TextLabel",SBar,{Text="☠  NEXUS  PANEL",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=13,BackgroundTransparency=1,Size=UDim2.new(1,-50,1,0),Position=UDim2.new(0,14,0,0),TextXAlignment=Enum.TextXAlignment.Left,ZIndex=12})
+N.CloseSideBtn=new("TextButton",SBar,{Text="×",TextColor3=T.H_DIM,Font=Enum.Font.GothamBold,TextSize=16,BackgroundTransparency=1,Size=UDim2.new(0,32,1,0),Position=UDim2.new(1,-36,0,0),AutoButtonColor=false,ZIndex=12})
+N.CloseSideBtn.MouseEnter:Connect(function() tw(N.CloseSideBtn,{TextColor3=T.H_FG},.1) end)
+N.CloseSideBtn.MouseLeave:Connect(function() tw(N.CloseSideBtn,{TextColor3=T.H_DIM},.1) end)
+
+local TabRow=new("Frame",N.SideWin,{Size=UDim2.new(1,0,0,32),Position=UDim2.new(0,0,0,42),BackgroundColor3=Color3.fromRGB(0,6,1),BorderSizePixel=0,ZIndex=10})
+new("Frame",TabRow,{Size=UDim2.new(1,0,0,1),Position=UDim2.new(0,0,1,-1),BackgroundColor3=T.H_DIM,BorderSizePixel=0,ZIndex=11})
+lst(TabRow,Enum.FillDirection.Horizontal,Enum.HorizontalAlignment.Left,0)
+local function sideTab(text,order)
+    local b=new("TextButton",TabRow,{Text=text,TextColor3=T.H_DIM,Font=Enum.Font.GothamBold,TextSize=10,BackgroundTransparency=1,BorderSizePixel=0,Size=UDim2.new(0,80,1,0),AutoButtonColor=false,ZIndex=12,LayoutOrder=order})
+    b.MouseEnter:Connect(function() tw(b,{TextColor3=T.H_FG},.1) end); b.MouseLeave:Connect(function() tw(b,{TextColor3=T.H_DIM},.1) end) return b
+end
+N.AITabBtn   = sideTab("⚡ AI",1)
+N.HackTabBtn = sideTab("🔒 HACK",2)
+
+N.LockPanel=new("Frame",N.SideWin,{Size=UDim2.new(1,0,1,-74),Position=UDim2.new(0,0,0,74),BackgroundTransparency=1,ZIndex=8})
+new("TextLabel",N.LockPanel,{Text="[ RESTRICTED ACCESS ]",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=13,BackgroundTransparency=1,Size=UDim2.new(1,0,0,20),Position=UDim2.new(0,0,0,40),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=9})
+new("TextLabel",N.LockPanel,{Text="Enter access code:",TextColor3=T.H_DIM,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,0,0,14),Position=UDim2.new(0,0,0,70),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=9})
+local CIF=new("Frame",N.LockPanel,{Size=UDim2.new(0,180,0,34),Position=UDim2.new(.5,-90,0,94),BackgroundColor3=Color3.fromRGB(0,16,4),BorderSizePixel=0,ZIndex=9}) rnd(CIF,6); str(CIF,T.H_FG,1)
+N.CodeInput=new("TextBox",CIF,{Text="",PlaceholderText="_ _ _ _",PlaceholderColor3=T.H_DIM,TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=16,BackgroundTransparency=1,BorderSizePixel=0,Size=UDim2.new(1,-16,1,0),Position=UDim2.new(0,8,0,0),TextXAlignment=Enum.TextXAlignment.Center,ClearTextOnFocus=false,ZIndex=10})
+local CSF=new("Frame",N.LockPanel,{Size=UDim2.new(0,110,0,30),Position=UDim2.new(.5,-55,0,138),BackgroundColor3=T.H_MED,BorderSizePixel=0,ZIndex=9}) rnd(CSF,6); str(CSF,T.H_FG,1)
+N.CodeSubmit=new("TextButton",CSF,{Text="[ ENTER ]",TextColor3=T.H_FG,Font=Enum.Font.Code,TextSize=12,BackgroundTransparency=1,Size=UDim2.new(1,0,1,0),AutoButtonColor=false,ZIndex=10})
+hov(N.CodeSubmit,CSF,T.H_MED,Color3.fromRGB(0,55,20))
+N.CodeErrLabel=new("TextLabel",N.LockPanel,{Text="",TextColor3=T.ERROR,Font=Enum.Font.Code,TextSize=10,BackgroundTransparency=1,Size=UDim2.new(1,0,0,14),Position=UDim2.new(0,0,0,178),TextXAlignment=Enum.TextXAlignment.Center,ZIndex=9})
+
+N.HackScroll=new("ScrollingFrame",N.SideWin,{Size=UDim2.new(1,0,1,-74),Position=UDim2.new(0,0,0,74),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=3,ScrollBarImageColor3=T.H_DIM,CanvasSize=UDim2.new(0,0,0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y,ZIndex=8,Visible=false})
+lst(N.HackScroll); pad(N.HackScroll,10,10,10,10)
+
+print("[Nova Part 1] GUI built — inject Part 2 now")
